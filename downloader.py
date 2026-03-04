@@ -638,19 +638,42 @@ class TurboDownloader(ctk.CTk):
 
         def init_ui():
             base = self.download_path
-            start_idx = len(self.items)
             new_indices = []
             for file_url, rel_dir in files:
                 name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
                 dest_dir = os.path.join(base, rel_dir) if keep_tree and rel_dir else base
                 dest = os.path.join(dest_dir, name)
-                it = DownloadItem(url=file_url, filename=name,
-                                  dest_path=dest, relative_path=rel_dir)
-                self.items.append(it)
-                self._add_row_for_item(start_idx, it)
-                self._update_row_ui(start_idx)
-                new_indices.append(start_idx)
-                start_idx += 1
+
+                # Réutiliser une ligne existante si même fichier déjà annulé/erreur
+                existing_idx = next(
+                    (i for i, it in enumerate(self.items)
+                     if it is not None
+                     and it.dest_path == dest
+                     and it.state in ("canceled", "error", "skipped")),
+                    None
+                )
+
+                if existing_idx is not None:
+                    it = self.items[existing_idx]
+                    it.url          = file_url
+                    it.downloaded   = 0
+                    it.resume_from  = 0
+                    it.total_size   = None
+                    it.error_msg    = ""
+                    it.state        = "waiting"
+                    it.cancel_event = threading.Event()
+                    it.speed_window.clear()
+                    self._update_row_ui(existing_idx)
+                    new_indices.append(existing_idx)
+                else:
+                    idx = len(self.items)
+                    it = DownloadItem(url=file_url, filename=name,
+                                      dest_path=dest, relative_path=rel_dir)
+                    self.items.append(it)
+                    self._add_row_for_item(idx, it)
+                    self._update_row_ui(idx)
+                    new_indices.append(idx)
+
             return new_indices
 
         def _run():
