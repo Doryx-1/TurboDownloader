@@ -188,16 +188,41 @@ class FileTreePopup(ctk.CTkToplevel):
         return True
 
     def _apply_visibility_subtree(self, toggled_node: FileTreeNode):
-        """Repackage uniquement les descendants du nœud togglé.
-        Les autres lignes ne sont pas touchées → pas de flash global.
+        """Repackage les descendants du nœud togglé à leur position DFS exacte.
+
+        Stratégie : on cherche dans _all_nodes le premier nœud visible qui suit
+        tout le sous-arbre — il est déjà packé et sert d'ancre pour pack(before=).
+        Ainsi les descendants réinsérés arrivent juste avant lui, pas en bas de liste.
         """
         descendants = self._get_descendants(toggled_node)
         if not descendants:
             return
+
+        # Ensemble des indices DFS des descendants pour les retrouver rapidement
+        desc_set = set(id(n) for n in descendants)
+
+        # Trouver l'index DFS du dernier descendant dans _all_nodes
+        last_desc_idx = max(
+            i for i, n in enumerate(self._all_nodes) if id(n) in desc_set
+        )
+
+        # Premier nœud visible APRÈS le sous-arbre complet → ancre d'insertion
+        anchor = None
+        for n in self._all_nodes[last_desc_idx + 1:]:
+            if self._is_visible(n):
+                anchor = n
+                break
+
+        # 1. Dépaqueter tous les descendants
         for node in descendants:
             node._row_frame.pack_forget()
-        for node in descendants:
-            if self._is_visible(node):
+
+        # 2. Repaqueter les visibles dans l'ordre DFS, ancrés avant le successeur
+        visible = [n for n in descendants if self._is_visible(n)]
+        for i, node in enumerate(visible):
+            if anchor is not None:
+                node._row_frame.pack(fill="x", pady=0, before=anchor._row_frame)
+            else:
                 node._row_frame.pack(fill="x", pady=0)
 
     # ---------------------------------------------------------------- Coches
