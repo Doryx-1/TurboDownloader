@@ -1,0 +1,637 @@
+import os
+import time
+import queue
+import threading
+from collections import deque
+from typing import Optional, List
+from urllib.parse import urljoin, unquote
+from concurrent.futures import ThreadPoolExecutor
+
+import requests
+from bs4 import BeautifulSoup
+import customtkinter as ctk
+from tkinter import filedialog
+
+from models import DownloadItem
+from widgets import DownloadRow
+from tree_popup import FileTreePopup
+
+
+VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov", ".wmv")
+CHUNK_SIZE = 1024 * 512  # 512 KB
+
+
+class TurboDownloader(ctk.CTk):
+
+    def __init__(self):
+        super().__init__()
+
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+
+        self.title("TurboDownloader")
+        self.geometry("1360x860")
+
+        # File d'attente thread-safe pour les mises à jour UI
+        self.uiq: "queue.Queue[tuple]" = queue.Queue()
+
+        # Session HTTP partagée entre tous les workers
+        self.req = requests.Session()
+        self.req.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+        })
+
+        self.download_path: Optional[str] = None
+        self.items: List[DownloadItem] = []     # None aux indices supprimés
+        self.rows: dict[int, DownloadRow] = {}
+        self.executor: Optional[ThreadPoolExecutor] = None
+        self.stop_all_event = threading.Event()
+
+        # Vitesse globale — fenêtre glissante sur 3 s
+        self._speed_lock = threading.Lock()
+        self._speed_samples: deque = deque()    # (timestamp, bytes)
+        self._global_total_bytes = 0
+
+        # Filtre actif dans la liste de droite
+        self._active_filter = "all"
+
+        self._build_ui()
+        self.after(80, self._process_ui_queue)
+        self.after(1000, self._tick_global_speed)
+
+    # ------------------------------------------------------------------ UI
+
+    def _build_ui(self):
+        main = ctk.CTkFrame(self)
+        main.pack(fill="both", expand=True, padx=10, pady=10)
+
+        left = ctk.CTkFrame(main, width=370)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        left.pack_propagate(False)
+
+        right = ctk.CTkFrame(main)
+        right.pack(side="right", fill="both", expand=True)
+
+        # ---- Panneau gauche ----
+        ctk.CTkLabel(left, text="URL du répertoire").pack(anchor="w", padx=12, pady=(12, 0))
+        self.url_entry = ctk.CTkEntry(left, width=340)
+        self.url_entry.pack(padx=12, pady=6)
+
+        ctk.CTkButton(left, text="Choisir dossier de destination",
+                      command=self.choose_folder).pack(padx=12, pady=(4, 2), fill="x")
+        self.folder_label = ctk.CTkLabel(left, text="Dossier: (non choisi)",
+                                         wraplength=340, justify="left", text_color="gray")
+        self.folder_label.pack(anchor="w", padx=12, pady=(0, 8))
+
+        self.keep_tree_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(left, text="Conserver l'arborescence originale",
+                        variable=self.keep_tree_var).pack(anchor="w", padx=12, pady=(0, 10))
+
+        ctk.CTkLabel(left, text="Téléchargements simultanés (1–20)").pack(anchor="w", padx=12)
+        self.worker_entry = ctk.CTkEntry(left, width=80)
+        self.worker_entry.insert(0, "8")
+        self.worker_entry.pack(anchor="w", padx=12, pady=6)
+
+        self.global_speed_label = ctk.CTkLabel(left, text="Vitesse globale: –",
+                                               font=ctk.CTkFont(size=14, weight="bold"))
+        self.global_speed_label.pack(anchor="w", padx=12, pady=(6, 2))
+
+        self.global_dl_label = ctk.CTkLabel(left, text="Total téléchargé: 0 MB",
+                                            text_color="gray")
+        self.global_dl_label.pack(anchor="w", padx=12, pady=(0, 10))
+
+        btn_row = ctk.CTkFrame(left, fg_color="transparent")
+        btn_row.pack(fill="x", padx=12, pady=(4, 4))
+        self.start_btn = ctk.CTkButton(btn_row, text="START",
+                                       command=self.start_downloads, fg_color="#1f6aa5")
+        self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        self.stop_btn = ctk.CTkButton(btn_row, text="STOP ALL",
+                                      command=self.stop_all, fg_color="#8B0000")
+        self.stop_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+        ctk.CTkButton(left, text="Effacer terminés/annulés",
+                      command=self.clear_finished).pack(fill="x", padx=12, pady=(6, 4))
+
+        ctk.CTkLabel(left, text="TurboDownloader • © Thomas PIERRE",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(
+                         side="bottom", anchor="sw", padx=12, pady=8)
+
+        # ---- Panneau droit ----
+        top_bar = ctk.CTkFrame(right, fg_color="transparent")
+        top_bar.pack(fill="x", padx=10, pady=(10, 4))
+        ctk.CTkLabel(top_bar, text="Téléchargements",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+
+        filter_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
+        filter_frame.pack(side="right")
+
+        self._filter_btns = {}
+        filters = [
+            ("all",         "Tous",       "#1f6aa5"),
+            ("downloading", "En cours",   "#2e8b57"),
+            ("waiting",     "En attente", "#5a5a5a"),
+            ("done",        "Terminés",   "#2e8b57"),
+            ("canceled",    "Annulés",    "#8B4513"),
+            ("error",       "Erreurs",    "#8B0000"),
+        ]
+        for fkey, flabel, fcolor in filters:
+            btn = ctk.CTkButton(
+                filter_frame, text=f"{flabel} (0)", width=110,
+                fg_color=fcolor if fkey == "all" else "transparent",
+                border_width=1, border_color=fcolor,
+                command=lambda k=fkey: self._set_filter(k),
+            )
+            btn.pack(side="left", padx=3)
+            self._filter_btns[fkey] = btn
+
+        self.scroll = ctk.CTkScrollableFrame(right)
+        self.scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    # ---------------------------------------------------------------- Thread-safe UI helpers
+
+    def ui(self, fn, *args, **kwargs):
+        """Enfile une fonction à exécuter sur le thread UI."""
+        self.uiq.put((fn, args, kwargs))
+
+    def _process_ui_queue(self):
+        try:
+            while True:
+                fn, args, kwargs = self.uiq.get_nowait()
+                try:
+                    fn(*args, **kwargs)
+                except Exception as e:
+                    print("[UIQ]", type(e).__name__, e)
+        except queue.Empty:
+            pass
+        self.after(80, self._process_ui_queue)
+
+    def ui_call(self, fn, *args, **kwargs):
+        """Appel synchrone depuis un thread background → attend la réponse du thread UI."""
+        ev = threading.Event()
+        box = {"v": None, "e": None}
+
+        def _run():
+            try:
+                box["v"] = fn(*args, **kwargs)
+            except Exception as e:
+                box["e"] = e
+            finally:
+                ev.set()
+
+        self.ui(_run)
+        ev.wait()
+        if box["e"]:
+            raise box["e"]
+        return box["v"]
+
+    def choose_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.download_path = folder
+            self.folder_label.configure(text=f"{folder}", text_color="white")
+
+    # ----------------------------------------------------------------- Crawl
+
+    def get_all_files(self, url: str, base_url: str = None):
+        """Scrape récursivement et retourne liste de (file_url, relative_path)."""
+        if base_url is None:
+            base_url = url
+        results = []
+        try:
+            r = self.req.get(url, timeout=30, allow_redirects=True)
+            r.raise_for_status()
+        except Exception as e:
+            print("[crawl]", e)
+            return results
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a"):
+            href = a.get("href", "")
+            if not href or href in ("../", "./", "/"):
+                continue
+            full = urljoin(url, href)
+            if not full.startswith(base_url.rstrip("/") + "/") and full != base_url:
+                if href.startswith("http"):
+                    continue
+            if href.endswith("/"):
+                results.extend(self.get_all_files(full, base_url))
+            elif href.lower().endswith(VIDEO_EXTENSIONS):
+                rel = full[len(base_url.rstrip("/")):]
+                rel = rel.lstrip("/")
+                rel_dir = os.path.dirname(rel)
+                results.append((full, rel_dir))
+
+        # Déduplique en préservant l'ordre
+        seen = set()
+        unique = []
+        for item in results:
+            if item[0] not in seen:
+                seen.add(item[0])
+                unique.append(item)
+        return unique
+
+    # ----------------------------------------------------------------- Gestion des rows
+
+    def _add_row_for_item(self, idx: int, item: DownloadItem):
+        row = DownloadRow(
+            self.scroll, item.filename,
+            on_cancel=lambda i=idx: self.cancel_one(i),
+            on_remove=lambda i=idx: self.remove_one(i),
+        )
+        self.rows[idx] = row
+        self._apply_filter_to_row(idx)
+
+    def cancel_one(self, idx: int):
+        if 0 <= idx < len(self.items):
+            it = self.items[idx]
+            it.cancel_event.set()
+            row = self.rows.get(idx)
+            if row and it.state in ("waiting", "downloading"):
+                row.status.configure(text="Annulation…")
+
+    def remove_one(self, idx: int):
+        row = self.rows.get(idx)
+        if not row:
+            return
+        it = self.items[idx]
+        if it.state not in ("done", "error", "canceled", "skipped"):
+            return
+        row.frame.destroy()
+        del self.rows[idx]
+        self.items[idx] = None      # marqué None — les indices des autres ne bougent pas
+        self._refresh_filter_counts()
+
+    def clear_finished(self):
+        for idx in list(self.rows.keys()):
+            it = self.items[idx]
+            if it and it.state in ("done", "error", "canceled", "skipped"):
+                self.remove_one(idx)
+
+    # ----------------------------------------------------------------- Formatage
+
+    @staticmethod
+    def _fmt_speed(bps: float) -> str:
+        if bps < 1024:
+            return f"{bps:.0f} B/s"
+        if bps < 1024 * 1024:
+            return f"{bps/1024:.1f} KB/s"
+        return f"{bps/1024/1024:.2f} MB/s"
+
+    @staticmethod
+    def _fmt_eta(seconds: Optional[float]) -> str:
+        if seconds is None or seconds <= 0 or seconds == float("inf"):
+            return "ETA –"
+        s = int(seconds)
+        if s < 60:
+            return f"ETA {s}s"
+        m, s = divmod(s, 60)
+        if m < 60:
+            return f"ETA {m}m{s:02d}s"
+        h, m = divmod(m, 60)
+        return f"ETA {h}h{m:02d}m"
+
+    @staticmethod
+    def _fmt_size(b: int) -> str:
+        if b < 1024:
+            return f"{b} B"
+        if b < 1024 * 1024:
+            return f"{b/1024:.1f} KB"
+        if b < 1024 ** 3:
+            return f"{b/1024/1024:.1f} MB"
+        return f"{b/1024**3:.2f} GB"
+
+    # ----------------------------------------------------------------- Mise à jour UI d'une row
+
+    def _update_row_ui(self, idx: int):
+        it = self.items[idx]
+        row = self.rows.get(idx)
+        if not row:
+            return
+
+        state_labels = {
+            "waiting":     "En attente",
+            "downloading": "En cours",
+            "done":        "Terminé",
+            "error":       f"Erreur: {it.error_msg[:40]}",
+            "canceled":    "Annulé",
+            "skipped":     "Existant (ignoré)",
+        }
+        row.status.configure(text=state_labels.get(it.state, it.state))
+
+        # Vitesse instantanée via fenêtre glissante
+        now = time.time()
+        win = it.speed_window
+        while win and now - win[0][0] > 4.0:
+            win.popleft()
+        if win:
+            total_bytes = sum(s[1] for s in win)
+            elapsed_w = now - win[0][0] if len(win) > 1 else 0.5
+            inst_speed = total_bytes / max(elapsed_w, 0.1)
+        else:
+            elapsed = max(now - it.started_at, 0.2)
+            inst_speed = it.downloaded / elapsed
+
+        row.speed_lbl.configure(text=self._fmt_speed(inst_speed))
+
+        if it.total_size and it.total_size > 0:
+            p = min((it.resume_from + it.downloaded) / it.total_size, 1.0)
+            row.progress.set(p)
+            remaining = max(it.total_size - it.resume_from - it.downloaded, 0)
+            eta = remaining / inst_speed if inst_speed > 100 else None
+            row.eta_lbl.configure(text=self._fmt_eta(eta))
+            done_b = it.resume_from + it.downloaded
+            row.name_lbl.configure(
+                text=f"{it.filename}  [{self._fmt_size(done_b)} / {self._fmt_size(it.total_size)}]"
+            )
+        else:
+            row.progress.set(0)
+            row.eta_lbl.configure(text="ETA –")
+
+        if it.state in ("done", "error", "canceled", "skipped"):
+            row.cancel_btn.configure(state="disabled")
+            row.remove_btn.configure(state="normal")
+            if it.state == "done":
+                row.progress.set(1.0)
+        else:
+            row.cancel_btn.configure(state="normal")
+            row.remove_btn.configure(state="disabled")
+
+        self._apply_filter_to_row(idx)
+
+    # ----------------------------------------------------------------- Filtres
+
+    def _set_filter(self, fkey: str):
+        self._active_filter = fkey
+        colors = {
+            "all":         "#1f6aa5",
+            "downloading": "#2e8b57",
+            "waiting":     "#5a5a5a",
+            "done":        "#2e8b57",
+            "canceled":    "#8B4513",
+            "error":       "#8B0000",
+        }
+        for k, btn in self._filter_btns.items():
+            btn.configure(fg_color=colors[k] if k == fkey else "transparent")
+        for idx in self.rows:
+            self._apply_filter_to_row(idx)
+
+    def _apply_filter_to_row(self, idx: int):
+        row = self.rows.get(idx)
+        it = self.items[idx] if idx < len(self.items) else None
+        if not row or not it:
+            return
+        if self._active_filter == "all":
+            row.set_visible(True)
+        else:
+            row.set_visible(it.state == self._active_filter)
+
+    def _refresh_filter_counts(self):
+        counts = {k: 0 for k in self._filter_btns}
+        active_items = [it for it in self.items if it is not None]
+        counts["all"] = len(active_items)
+        for it in active_items:
+            if it.state in counts:
+                counts[it.state] += 1
+        labels = {
+            "all":         "Tous",
+            "downloading": "En cours",
+            "waiting":     "En attente",
+            "done":        "Terminés",
+            "canceled":    "Annulés",
+            "error":       "Erreurs",
+        }
+        for k, btn in self._filter_btns.items():
+            btn.configure(text=f"{labels[k]} ({counts.get(k, 0)})")
+
+    # ----------------------------------------------------------------- Vitesse globale
+
+    def _record_bytes(self, n: int):
+        """Enregistre n octets téléchargés — appelé depuis les workers."""
+        now = time.time()
+        with self._speed_lock:
+            self._speed_samples.append((now, n))
+            self._global_total_bytes += n
+            while self._speed_samples and now - self._speed_samples[0][0] > 3.0:
+                self._speed_samples.popleft()
+
+    def _tick_global_speed(self):
+        with self._speed_lock:
+            now = time.time()
+            while self._speed_samples and now - self._speed_samples[0][0] > 3.0:
+                self._speed_samples.popleft()
+            samples = list(self._speed_samples)
+            total = self._global_total_bytes
+
+        if len(samples) >= 2:
+            window_bytes = sum(s[1] for s in samples)
+            window_sec = samples[-1][0] - samples[0][0]
+            speed = window_bytes / max(window_sec, 0.1)
+        elif samples:
+            speed = samples[0][1]
+        else:
+            speed = 0.0
+
+        speed_text = "–" if speed == 0.0 else self._fmt_speed(speed)
+        self.global_speed_label.configure(text=f"Vitesse globale: {speed_text}")
+        self.global_dl_label.configure(text=f"Total téléchargé: {self._fmt_size(total)}")
+        self.after(1000, self._tick_global_speed)
+
+    # ----------------------------------------------------------------- Worker de téléchargement
+
+    def _download_worker(self, idx: int):
+        it = self.items[idx]
+        it.state = "downloading"
+        it.started_at = time.time()
+        it.error_msg = ""
+        self.ui(self._update_row_ui, idx)
+
+        # Détection fichier existant → reprise
+        existing_size = 0
+        if os.path.exists(it.dest_path):
+            existing_size = os.path.getsize(it.dest_path)
+
+        it.resume_from = existing_size
+        it.downloaded = 0
+        headers = {}
+        if existing_size > 0:
+            headers["Range"] = f"bytes={existing_size}-"
+
+        try:
+            with self.req.get(it.url, stream=True, allow_redirects=True,
+                              timeout=60, headers=headers) as r:
+
+                # Serveur sans support Range → repart de 0
+                if existing_size > 0 and r.status_code == 200:
+                    it.resume_from = 0
+                    existing_size = 0
+
+                if r.status_code not in (200, 206):
+                    r.raise_for_status()
+
+                ct = (r.headers.get("Content-Type") or "").lower()
+                if "text/html" in ct:
+                    it.state = "error"
+                    it.error_msg = "HTML reçu (lien expiré / auth ?)"
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    return
+
+                # Taille depuis les headers du stream (pas de requête supplémentaire)
+                cr = r.headers.get("Content-Range")
+                if cr and "/" in cr:
+                    try:
+                        it.total_size = int(cr.split("/")[-1])
+                    except ValueError:
+                        pass
+                if it.total_size is None:
+                    cl = r.headers.get("Content-Length")
+                    if cl and cl.isdigit():
+                        it.total_size = int(cl) + existing_size
+
+                # Fichier déjà complet → skip
+                if it.total_size and existing_size >= it.total_size:
+                    it.state = "skipped"
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    return
+
+                os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+
+                write_mode = "ab" if existing_size > 0 else "wb"
+                last_ui = 0.0
+
+                with open(it.dest_path, write_mode) as f:
+                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                        if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                            it.state = "canceled"
+                            self.ui(self._update_row_ui, idx)
+                            self.ui(self._refresh_filter_counts)
+                            return
+                        if not chunk:
+                            continue
+
+                        f.write(chunk)
+                        n = len(chunk)
+                        it.downloaded += n
+                        it.speed_window.append((time.time(), n))
+                        self._record_bytes(n)
+
+                        now = time.time()
+                        if now - last_ui >= 0.20:
+                            last_ui = now
+                            self.ui(self._update_row_ui, idx)
+
+                it.state = "done"
+                self.ui(self._update_row_ui, idx)
+                self.ui(self._refresh_filter_counts)
+
+        except Exception as e:
+            it.state = "error"
+            it.error_msg = str(e)
+            self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
+
+    # ----------------------------------------------------------------- Orchestration START / STOP
+
+    def start_downloads(self):
+        if not self.download_path:
+            self.folder_label.configure(
+                text="Choisis d'abord un dossier de destination", text_color="orange")
+            return
+
+        url = self.url_entry.get().strip()
+        if not url:
+            return
+
+        try:
+            workers = int(self.worker_entry.get().strip() or "8")
+        except Exception:
+            workers = 8
+        workers = max(1, min(20, workers))
+        self.worker_entry.delete(0, "end")
+        self.worker_entry.insert(0, str(workers))
+
+        self.stop_all_event.clear()
+        keep_tree = self.keep_tree_var.get()
+
+        self.start_btn.configure(state="disabled", text="Scan…")
+
+        def crawl_then_popup():
+            files = self.get_all_files(url)
+
+            def restore_btn():
+                self.start_btn.configure(state="normal", text="START")
+
+            if not files:
+                self.ui(restore_btn)
+                self.ui(lambda: self.folder_label.configure(
+                    text="Aucun fichier vidéo trouvé à cette URL", text_color="orange"))
+                return
+
+            def open_popup():
+                restore_btn()
+
+                def on_confirm(selected_files):
+                    if not selected_files:
+                        return
+                    self._launch_downloads(selected_files, workers, keep_tree)
+
+                FileTreePopup(self, files, on_confirm)
+
+            self.ui(open_popup)
+
+        threading.Thread(target=crawl_then_popup, daemon=True).start()
+
+    def _launch_downloads(self, files: list, workers: int, keep_tree: bool):
+        """Lance les téléchargements sur la sélection issue de la popup."""
+        self.stop_all_event.clear()
+
+        def init_ui():
+            base = self.download_path
+            start_idx = len(self.items)
+            new_indices = []
+            for file_url, rel_dir in files:
+                name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
+                dest_dir = os.path.join(base, rel_dir) if keep_tree and rel_dir else base
+                dest = os.path.join(dest_dir, name)
+                it = DownloadItem(url=file_url, filename=name,
+                                  dest_path=dest, relative_path=rel_dir)
+                self.items.append(it)
+                self._add_row_for_item(start_idx, it)
+                self._update_row_ui(start_idx)
+                new_indices.append(start_idx)
+                start_idx += 1
+            return new_indices
+
+        def _run():
+            nonlocal new_indices
+            new_indices = self.ui_call(init_ui)
+            self.executor = ThreadPoolExecutor(max_workers=workers)
+            for i in new_indices:
+                fut = self.executor.submit(self._download_worker, i)
+                fut.add_done_callback(
+                    lambda f: f.exception() and print("[WORKER]", f.exception()))
+
+        new_indices = []
+        threading.Thread(target=_run, daemon=True).start()
+
+    def stop_all(self):
+        self.stop_all_event.set()
+        for it in self.items:
+            if it and it.state in ("waiting", "downloading"):
+                it.cancel_event.set()
+        ex = self.executor
+        if ex:
+            try:
+                ex.shutdown(wait=False, cancel_futures=False)
+            except TypeError:
+                ex.shutdown(wait=False)
+
+        def mark():
+            for idx, it in enumerate(self.items):
+                if it and it.state in ("waiting", "downloading"):
+                    it.state = "canceled"
+                    self._update_row_ui(idx)
+        self.ui(mark)
