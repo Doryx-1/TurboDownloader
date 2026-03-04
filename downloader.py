@@ -132,6 +132,7 @@ class TurboDownloader(ctk.CTk):
         filters = [
             ("all",         "Tous",       "#1f6aa5"),
             ("downloading", "En cours",   "#2e8b57"),
+            ("paused",      "En pause",   "#1f6aa5"),
             ("waiting",     "En attente", "#5a5a5a"),
             ("done",        "Terminés",   "#2e8b57"),
             ("canceled",    "Annulés",    "#8B4513"),
@@ -250,6 +251,7 @@ class TurboDownloader(ctk.CTk):
     def _add_row_for_item(self, idx: int, item: DownloadItem):
         row = DownloadRow(
             self.scroll, item.filename,
+            on_pause=lambda i=idx:  self.pause_one(i),
             on_cancel=lambda i=idx: self.cancel_one(i),
             on_remove=lambda i=idx: self.remove_one(i),
         )
@@ -263,6 +265,28 @@ class TurboDownloader(ctk.CTk):
             row = self.rows.get(idx)
             if row and it.state in ("waiting", "downloading"):
                 row.status.configure(text="Annulation…")
+
+    def pause_one(self, idx: int):
+        """Bascule pause ↔ reprise sur une ligne individuelle."""
+        if not (0 <= idx < len(self.items)):
+            return
+        it = self.items[idx]
+        if it is None:
+            return
+        if it.state == "downloading":
+            # Mettre en pause
+            it.pause_event.set()
+        elif it.state == "paused":
+            # Reprendre
+            it.pause_event.clear()
+            it.cancel_event.clear()
+            it.state = "waiting"
+            it.speed_window.clear()
+            self._update_row_ui(idx)
+            self.executor = self.executor or ThreadPoolExecutor(max_workers=1)
+            fut = self.executor.submit(self._download_worker, idx)
+            fut.add_done_callback(
+                lambda f: f.exception() and print("[WORKER]", f.exception()))
 
     def remove_one(self, idx: int):
         row = self.rows.get(idx)
@@ -326,6 +350,7 @@ class TurboDownloader(ctk.CTk):
         state_labels = {
             "waiting":     "En attente",
             "downloading": "En cours",
+            "paused":      "En pause",
             "done":        "Terminé",
             "error":       f"Erreur: {it.error_msg[:40]}",
             "canceled":    "Annulé",
@@ -363,11 +388,21 @@ class TurboDownloader(ctk.CTk):
             row.eta_lbl.configure(text="ETA –")
 
         if it.state in ("done", "error", "canceled", "skipped"):
+            row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
             row.cancel_btn.configure(state="disabled")
             row.remove_btn.configure(state="normal")
             if it.state == "done":
                 row.progress.set(1.0)
-        else:
+        elif it.state == "paused":
+            row.pause_btn.configure(state="normal", text="Reprendre", fg_color="#1f6aa5")
+            row.cancel_btn.configure(state="normal")
+            row.remove_btn.configure(state="disabled")
+        elif it.state == "downloading":
+            row.pause_btn.configure(state="normal", text="Pause", fg_color="#5a5a5a")
+            row.cancel_btn.configure(state="normal")
+            row.remove_btn.configure(state="disabled")
+        else:  # waiting
+            row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
 
@@ -380,6 +415,7 @@ class TurboDownloader(ctk.CTk):
         colors = {
             "all":         "#1f6aa5",
             "downloading": "#2e8b57",
+            "paused":      "#1f6aa5",
             "waiting":     "#5a5a5a",
             "done":        "#2e8b57",
             "canceled":    "#8B4513",
@@ -410,6 +446,7 @@ class TurboDownloader(ctk.CTk):
         labels = {
             "all":         "Tous",
             "downloading": "En cours",
+            "paused":      "En pause",
             "waiting":     "En attente",
             "done":        "Terminés",
             "canceled":    "Annulés",
@@ -522,6 +559,11 @@ class TurboDownloader(ctk.CTk):
                             self.ui(self._update_row_ui, idx)
                             self.ui(self._refresh_filter_counts)
                             return
+                        if it.pause_event.is_set():
+                            it.state = "paused"
+                            self.ui(self._update_row_ui, idx)
+                            self.ui(self._refresh_filter_counts)
+                            return
                         if not chunk:
                             continue
 
@@ -571,6 +613,10 @@ class TurboDownloader(ctk.CTk):
         self.stop_all_event.clear()
         self._scan_cancel_event.clear()
         keep_tree = self.keep_tree_var.get()
+
+        # Normaliser l'URL : ajouter / final si c'est un répertoire sans extension
+        if not url.split("?")[0].lower().endswith(VIDEO_EXTENSIONS) and not url.endswith("/"):
+            url = url + "/"
 
         # ── Cas 1 : URL directe vers un fichier vidéo ──────────────────────
         if url.split("?")[0].lower().endswith(VIDEO_EXTENSIONS):
@@ -662,6 +708,7 @@ class TurboDownloader(ctk.CTk):
                     it.error_msg    = ""
                     it.state        = "waiting"
                     it.cancel_event = threading.Event()
+                    it.pause_event  = threading.Event()
                     it.speed_window.clear()
                     self._update_row_ui(existing_idx)
                     new_indices.append(existing_idx)
