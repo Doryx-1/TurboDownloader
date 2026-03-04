@@ -551,14 +551,13 @@ class TurboDownloader(ctk.CTk):
 
                 write_mode = "ab" if existing_size > 0 else "wb"
                 last_ui = 0.0
+                _canceled = False
 
                 with open(it.dest_path, write_mode) as f:
                     for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
-                            it.state = "canceled"
-                            self.ui(self._update_row_ui, idx)
-                            self.ui(self._refresh_filter_counts)
-                            return
+                            _canceled = True
+                            break
                         if it.pause_event.is_set():
                             it.state = "paused"
                             self.ui(self._update_row_ui, idx)
@@ -577,6 +576,18 @@ class TurboDownloader(ctk.CTk):
                         if now - last_ui >= 0.20:
                             last_ui = now
                             self.ui(self._update_row_ui, idx)
+
+                # Fichier fermé proprement — suppression possible maintenant
+                if _canceled:
+                    it.state = "canceled"
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    try:
+                        if os.path.exists(it.dest_path):
+                            os.remove(it.dest_path)
+                    except OSError:
+                        pass
+                    return
 
                 it.state = "done"
                 self.ui(self._update_row_ui, idx)
@@ -753,4 +764,10 @@ class TurboDownloader(ctk.CTk):
                 if it and it.state in ("waiting", "downloading"):
                     it.state = "canceled"
                     self._update_row_ui(idx)
+                    # Supprimer le fichier partiel (le worker est déjà sorti)
+                    try:
+                        if os.path.exists(it.dest_path):
+                            os.remove(it.dest_path)
+                    except OSError:
+                        pass
         self.ui(mark)
