@@ -48,6 +48,7 @@ class TurboDownloader(ctk.CTk):
         self.rows: dict[int, DownloadRow] = {}
         self.executor: Optional[ThreadPoolExecutor] = None
         self.stop_all_event = threading.Event()
+        self._scan_cancel_event = threading.Event()  # interrompt le crawl en cours
 
         # Vitesse globale — fenêtre glissante sur 3 s
         self._speed_lock = threading.Lock()
@@ -194,11 +195,21 @@ class TurboDownloader(ctk.CTk):
 
     # ----------------------------------------------------------------- Crawl
 
-    def get_all_files(self, url: str, base_url: str = None):
-        """Scrape récursivement et retourne liste de (file_url, relative_path)."""
+    def get_all_files(self, url: str, base_url: str = None,
+                      cancel_event: threading.Event = None) -> list:
+        """Scrape récursivement et retourne liste de (file_url, relative_path).
+        S'arrête proprement si cancel_event est set (STOP ou timeout).
+        """
         if base_url is None:
             base_url = url
+        if cancel_event is None:
+            cancel_event = self._scan_cancel_event
+
         results = []
+
+        if cancel_event.is_set():
+            return results
+
         try:
             r = self.req.get(url, timeout=30, allow_redirects=True)
             r.raise_for_status()
@@ -208,6 +219,8 @@ class TurboDownloader(ctk.CTk):
 
         soup = BeautifulSoup(r.text, "html.parser")
         for a in soup.find_all("a"):
+            if cancel_event.is_set():
+                break
             href = a.get("href", "")
             if not href or href in ("../", "./", "/"):
                 continue
@@ -216,7 +229,7 @@ class TurboDownloader(ctk.CTk):
                 if href.startswith("http"):
                     continue
             if href.endswith("/"):
-                results.extend(self.get_all_files(full, base_url))
+                results.extend(self.get_all_files(full, base_url, cancel_event))
             elif href.lower().endswith(VIDEO_EXTENSIONS):
                 rel = full[len(base_url.rstrip("/")):]
                 rel = rel.lstrip("/")
@@ -535,6 +548,8 @@ class TurboDownloader(ctk.CTk):
 
     # ----------------------------------------------------------------- Orchestration START / STOP
 
+    SCAN_TIMEOUT = 60  # secondes avant d'interrompre le crawl
+
     def start_downloads(self):
         if not self.download_path:
             self.folder_label.configure(
@@ -554,31 +569,64 @@ class TurboDownloader(ctk.CTk):
         self.worker_entry.insert(0, str(workers))
 
         self.stop_all_event.clear()
+        self._scan_cancel_event.clear()
         keep_tree = self.keep_tree_var.get()
 
+        # ── Cas 1 : URL directe vers un fichier vidéo ──────────────────────
+        if url.split("?")[0].lower().endswith(VIDEO_EXTENSIONS):
+            name = unquote(os.path.basename(url.split("?")[0]) or "file.bin")
+            self._launch_downloads([(url, "")], workers, keep_tree)
+            self.folder_label.configure(
+                text=f"Téléchargement direct : {name}", text_color="white")
+            return
+
+        # ── Cas 2 : URL de répertoire → crawl ──────────────────────────────
         self.start_btn.configure(state="disabled", text="Scan…")
 
         def crawl_then_popup():
+            # Timer de timeout : set cancel_event après SCAN_TIMEOUT secondes
+            timer = threading.Timer(
+                self.SCAN_TIMEOUT, self._scan_cancel_event.set)
+            timer.daemon = True
+            timer.start()
+
             files = self.get_all_files(url)
+            timed_out = self._scan_cancel_event.is_set()
+
+            timer.cancel()  # annule le timer s'il n'a pas encore déclenché
 
             def restore_btn():
                 self.start_btn.configure(state="normal", text="START")
 
+            # Scan interrompu par STOP (pas de timeout, pas de résultats attendus)
+            if self.stop_all_event.is_set():
+                self.ui(restore_btn)
+                return
+
             if not files:
                 self.ui(restore_btn)
-                self.ui(lambda: self.folder_label.configure(
-                    text="Aucun fichier vidéo trouvé à cette URL", text_color="orange"))
+                msg = ("Scan interrompu (timeout 60s) — aucun fichier trouvé"
+                       if timed_out else "Aucun fichier vidéo trouvé à cette URL")
+                self.ui(lambda m=msg: self.folder_label.configure(
+                    text=m, text_color="orange"))
                 return
 
             def open_popup():
                 restore_btn()
+                warning = (
+                    " ⚠ Scan interrompu après 60s — liste possiblement incomplète"
+                    if timed_out else ""
+                )
 
                 def on_confirm(selected_files):
                     if not selected_files:
                         return
                     self._launch_downloads(selected_files, workers, keep_tree)
 
-                FileTreePopup(self, files, on_confirm)
+                popup = FileTreePopup(self, files, on_confirm)
+                if warning:
+                    # Afficher l'avertissement dans le folder_label (visible derrière la popup)
+                    self.folder_label.configure(text=warning, text_color="orange")
 
             self.ui(open_popup)
 
@@ -619,6 +667,7 @@ class TurboDownloader(ctk.CTk):
 
     def stop_all(self):
         self.stop_all_event.set()
+        self._scan_cancel_event.set()   # interrompt aussi un crawl en cours
         for it in self.items:
             if it and it.state in ("waiting", "downloading"):
                 it.cancel_event.set()
