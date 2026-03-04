@@ -3,7 +3,7 @@ import time
 import queue
 import threading
 from collections import deque
-from typing import Optional, List
+from typing import Optional
 from urllib.parse import urljoin, unquote
 from concurrent.futures import ThreadPoolExecutor
 
@@ -44,7 +44,8 @@ class TurboDownloader(ctk.CTk):
         })
 
         self.download_path: Optional[str] = None
-        self.items: List[DownloadItem] = []     # None aux indices supprimés
+        self.items: dict[int, DownloadItem] = {}  # idx → item (pas de trous)
+        self._next_idx: int = 0                    # prochain index à attribuer
         self.rows: dict[int, DownloadRow] = {}
         self.executor: Optional[ThreadPoolExecutor] = None
         self.stop_all_event = threading.Event()
@@ -170,7 +171,9 @@ class TurboDownloader(ctk.CTk):
         self.after(80, self._process_ui_queue)
 
     def ui_call(self, fn, *args, **kwargs):
-        """Appel synchrone depuis un thread background → attend la réponse du thread UI."""
+        """Appel synchrone depuis un thread background → attend la réponse du thread UI.
+        Lève RuntimeError si le thread UI ne répond pas dans les 10 secondes.
+        """
         ev = threading.Event()
         box = {"v": None, "e": None}
 
@@ -183,7 +186,8 @@ class TurboDownloader(ctk.CTk):
                 ev.set()
 
         self.ui(_run)
-        ev.wait()
+        if not ev.wait(timeout=10):
+            raise RuntimeError("ui_call timeout : le thread UI ne répond plus")
         if box["e"]:
             raise box["e"]
         return box["v"]
@@ -259,7 +263,7 @@ class TurboDownloader(ctk.CTk):
         self._apply_filter_to_row(idx)
 
     def cancel_one(self, idx: int):
-        if 0 <= idx < len(self.items):
+        if idx in self.items:
             it = self.items[idx]
             it.cancel_event.set()
             row = self.rows.get(idx)
@@ -268,11 +272,9 @@ class TurboDownloader(ctk.CTk):
 
     def pause_one(self, idx: int):
         """Bascule pause ↔ reprise sur une ligne individuelle."""
-        if not (0 <= idx < len(self.items)):
+        if idx not in self.items:
             return
         it = self.items[idx]
-        if it is None:
-            return
         if it.state == "downloading":
             # Mettre en pause
             it.pause_event.set()
@@ -297,12 +299,12 @@ class TurboDownloader(ctk.CTk):
             return
         row.frame.destroy()
         del self.rows[idx]
-        self.items[idx] = None      # marqué None — les indices des autres ne bougent pas
+        del self.items[idx]
         self._refresh_filter_counts()
 
     def clear_finished(self):
         for idx in list(self.rows.keys()):
-            it = self.items[idx]
+            it = self.items.get(idx)
             if it and it.state in ("done", "error", "canceled", "skipped"):
                 self.remove_one(idx)
 
@@ -428,7 +430,7 @@ class TurboDownloader(ctk.CTk):
 
     def _apply_filter_to_row(self, idx: int):
         row = self.rows.get(idx)
-        it = self.items[idx] if idx < len(self.items) else None
+        it = self.items.get(idx)
         if not row or not it:
             return
         if self._active_filter == "all":
@@ -438,7 +440,7 @@ class TurboDownloader(ctk.CTk):
 
     def _refresh_filter_counts(self):
         counts = {k: 0 for k in self._filter_btns}
-        active_items = [it for it in self.items if it is not None]
+        active_items = list(self.items.values())
         counts["all"] = len(active_items)
         for it in active_items:
             if it.state in counts:
@@ -703,9 +705,8 @@ class TurboDownloader(ctk.CTk):
 
                 # Réutiliser une ligne existante si même fichier déjà annulé/erreur
                 existing_idx = next(
-                    (i for i, it in enumerate(self.items)
-                     if it is not None
-                     and it.dest_path == dest
+                    (i for i, it in self.items.items()
+                     if it.dest_path == dest
                      and it.state in ("canceled", "error", "skipped")),
                     None
                 )
@@ -724,10 +725,11 @@ class TurboDownloader(ctk.CTk):
                     self._update_row_ui(existing_idx)
                     new_indices.append(existing_idx)
                 else:
-                    idx = len(self.items)
+                    idx = self._next_idx
+                    self._next_idx += 1
                     it = DownloadItem(url=file_url, filename=name,
                                       dest_path=dest, relative_path=rel_dir)
-                    self.items.append(it)
+                    self.items[idx] = it
                     self._add_row_for_item(idx, it)
                     self._update_row_ui(idx)
                     new_indices.append(idx)
@@ -749,8 +751,8 @@ class TurboDownloader(ctk.CTk):
     def stop_all(self):
         self.stop_all_event.set()
         self._scan_cancel_event.set()   # interrompt aussi un crawl en cours
-        for it in self.items:
-            if it and it.state in ("waiting", "downloading"):
+        for it in self.items.values():
+            if it.state in ("waiting", "downloading"):
                 it.cancel_event.set()
         ex = self.executor
         if ex:
@@ -760,8 +762,8 @@ class TurboDownloader(ctk.CTk):
                 ex.shutdown(wait=False)
 
         def mark():
-            for idx, it in enumerate(self.items):
-                if it and it.state in ("waiting", "downloading"):
+            for idx, it in list(self.items.items()):
+                if it.state in ("waiting", "downloading"):
                     it.state = "canceled"
                     self._update_row_ui(idx)
                     # Supprimer le fichier partiel (le worker est déjà sorti)
