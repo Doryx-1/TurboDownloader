@@ -8,7 +8,7 @@ from typing import Optional, List
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, unquote
+from urllib.parse import urljoin, unquote
 
 import customtkinter as ctk
 from tkinter import filedialog
@@ -240,7 +240,18 @@ class FileTreePopup(ctk.CTkToplevel):
     def _toggle_expand(self, node: FileTreeNode):
         node._expanded = not node._expanded
         node._expand_btn.configure(text="▼" if node._expanded else "▶")
-        self._apply_visibility()
+        # Optimisation : on ne repackage que les descendants de ce nœud,
+        # pas toute la liste — évite le flash sur les grosses arborescences
+        self._apply_visibility_subtree(node)
+
+    def _get_descendants(self, node: FileTreeNode) -> list:
+        """Retourne tous les descendants d'un nœud en ordre DFS."""
+        result = []
+        for child in node.children:
+            result.append(child)
+            if child.is_dir:
+                result.extend(self._get_descendants(child))
+        return result
 
     def _is_visible(self, node: FileTreeNode) -> bool:
         """Un nœud est visible si tous ses ancêtres sont expanded."""
@@ -251,23 +262,22 @@ class FileTreePopup(ctk.CTkToplevel):
             p = p.parent
         return True
 
-    def _apply_visibility(self):
-        """Repack les lignes visibles EN RESPECTANT L'ORDRE DFS avec pack(before=)."""
-        # Séparer visibles / cachés
-        visible = [n for n in self._all_nodes if self._is_visible(n)]
-        hidden  = [n for n in self._all_nodes if not self._is_visible(n)]
+    def _apply_visibility_subtree(self, toggled_node: FileTreeNode):
+        """Repackage uniquement les descendants du nœud togglé.
+        Les autres lignes ne sont pas touchées → pas de flash global.
+        Stratégie : unpack descendants → repack les visibles dans l'ordre DFS.
+        """
+        descendants = self._get_descendants(toggled_node)
+        if not descendants:
+            return
 
-        # Masquer d'abord les invisibles
-        for node in hidden:
+        # 1. Dépaqueter tous les descendants
+        for node in descendants:
             node._row_frame.pack_forget()
 
-        # Repacker les visibles dans l'ordre DFS en utilisant pack(before=) :
-        # chaque ligne est insérée AVANT la suivante dans la liste visible,
-        # ce qui garantit l'ordre même après un pack_forget.
-        for i, node in enumerate(visible):
-            if i + 1 < len(visible):
-                node._row_frame.pack(fill="x", pady=0, before=visible[i + 1]._row_frame)
-            else:
+        # 2. Repaqueter uniquement les visibles dans l'ordre DFS
+        for node in descendants:
+            if self._is_visible(node):
                 node._row_frame.pack(fill="x", pady=0)
 
     # ---------------------------------------------------------------- Coches
@@ -417,7 +427,6 @@ class TurboDownloader(ctk.CTk):
         filter_frame.pack(side="right")
 
         self._filter_btns = {}
-        self._filter_counts = {}
         filters = [
             ("all",        "Tous",       "#1f6aa5"),
             ("downloading","En cours",   "#2e8b57"),
@@ -427,7 +436,6 @@ class TurboDownloader(ctk.CTk):
             ("error",      "Erreurs",    "#8B0000"),
         ]
         for fkey, flabel, fcolor in filters:
-            self._filter_counts[fkey] = 0
             btn = ctk.CTkButton(
                 filter_frame, text=f"{flabel} (0)", width=110,
                 fg_color=fcolor if fkey == "all" else "transparent",
@@ -559,25 +567,7 @@ class TurboDownloader(ctk.CTk):
             if it and it.state in ("done", "error", "canceled", "skipped"):
                 self.remove_one(idx)
 
-    # ------------------------------------------------ Probe / format
-    def _probe_size(self, url: str) -> Optional[int]:
-        try:
-            h = self.req.head(url, allow_redirects=True, timeout=20)
-            cl = h.headers.get("Content-Length")
-            if cl and cl.isdigit():
-                return int(cl)
-        except Exception:
-            pass
-        try:
-            g = self.req.get(url, stream=True, allow_redirects=True, timeout=20)
-            cl = g.headers.get("Content-Length")
-            g.close()
-            if cl and cl.isdigit():
-                return int(cl)
-        except Exception:
-            pass
-        return None
-
+    # ------------------------------------------------ Format
     @staticmethod
     def _fmt_speed(bps: float) -> str:
         if bps < 1024:
@@ -666,8 +656,6 @@ class TurboDownloader(ctk.CTk):
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
 
-        # Mettre à jour les compteurs de filtres
-        self._refresh_filter_counts()
         # Appliquer visibilité selon filtre actif
         self._apply_filter_to_row(idx)
 
@@ -764,20 +752,7 @@ class TurboDownloader(ctk.CTk):
         if os.path.exists(it.dest_path):
             existing_size = os.path.getsize(it.dest_path)
 
-        # Probe taille totale si inconnue
-        if it.total_size is None:
-            it.total_size = self._probe_size(it.url)
-            self.ui(self._update_row_ui, idx)
-
-        # Si le fichier est déjà complet → skip
-        if it.total_size and existing_size >= it.total_size:
-            it.state = "skipped"
-            it.resume_from = existing_size
-            it.downloaded = 0
-            self.ui(self._update_row_ui, idx)
-            return
-
-        # Préparer reprise
+        # Préparer reprise (Range header si fichier partiel)
         it.resume_from = existing_size
         it.downloaded = 0
         headers = {}
@@ -801,20 +776,27 @@ class TurboDownloader(ctk.CTk):
                     it.state = "error"
                     it.error_msg = "HTML reçu (lien expiré / auth ?)"
                     self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
                     return
 
-                # Taille via Content-Length ou Content-Range
+                # Lire la taille directement depuis les headers du GET stream
+                cr = r.headers.get("Content-Range")
+                if cr and "/" in cr:
+                    try:
+                        it.total_size = int(cr.split("/")[-1])
+                    except ValueError:
+                        pass
                 if it.total_size is None:
-                    cr = r.headers.get("Content-Range")
-                    if cr and "/" in cr:
-                        try:
-                            it.total_size = int(cr.split("/")[-1])
-                        except ValueError:
-                            pass
-                    if it.total_size is None:
-                        cl = r.headers.get("Content-Length")
-                        if cl and cl.isdigit():
-                            it.total_size = int(cl) + existing_size
+                    cl = r.headers.get("Content-Length")
+                    if cl and cl.isdigit():
+                        it.total_size = int(cl) + existing_size
+
+                # Fichier déjà complet → skip (détectable maintenant qu'on a la taille)
+                if it.total_size and existing_size >= it.total_size:
+                    it.state = "skipped"
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    return
 
                 os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
 
@@ -826,6 +808,7 @@ class TurboDownloader(ctk.CTk):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
                             it.state = "canceled"
                             self.ui(self._update_row_ui, idx)
+                            self.ui(self._refresh_filter_counts)
                             return
                         if not chunk:
                             continue
@@ -843,11 +826,13 @@ class TurboDownloader(ctk.CTk):
 
                 it.state = "done"
                 self.ui(self._update_row_ui, idx)
+                self.ui(self._refresh_filter_counts)
 
         except Exception as e:
             it.state = "error"
             it.error_msg = str(e)
             self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
 
     # --------------------------------- Start / Stop
     def start_downloads(self):
@@ -952,7 +937,7 @@ class TurboDownloader(ctk.CTk):
 
         def mark():
             for idx, it in enumerate(self.items):
-                if it.state in ("waiting", "downloading"):
+                if it and it.state in ("waiting", "downloading"):
                     it.state = "canceled"
                     self._update_row_ui(idx)
         self.ui(mark)
