@@ -25,6 +25,7 @@ class DownloadItem:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     pause_event:  threading.Event = field(default_factory=threading.Event)
 
-    # state: waiting / downloading / paused / done / error / canceled / skipped
+    # state: waiting / downloading / paused / moving / done / error / canceled / skipped
     state: str = "waiting"
+    temp_path: str = ""             # chemin du .part en cours (vide si DL direct)
     error_msg: str = ""

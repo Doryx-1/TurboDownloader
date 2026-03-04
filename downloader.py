@@ -12,9 +12,12 @@ from bs4 import BeautifulSoup
 import customtkinter as ctk
 from tkinter import filedialog
 
+import shutil
+
 from models import DownloadItem
 from widgets import DownloadRow
 from tree_popup import FileTreePopup
+from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR
 
 
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov", ".wmv")
@@ -58,6 +61,9 @@ class TurboDownloader(ctk.CTk):
 
         # Filtre actif dans la liste de droite
         self._active_filter = "all"
+
+        # Paramètres (temp dir, etc.)
+        self._settings = load_settings()
 
         self._build_ui()
         self.after(80, self._process_ui_queue)
@@ -118,7 +124,12 @@ class TurboDownloader(ctk.CTk):
 
         ctk.CTkLabel(left, text="TurboDownloader • © Thomas PIERRE",
                      font=ctk.CTkFont(size=11), text_color="gray").pack(
-                         side="bottom", anchor="sw", padx=12, pady=8)
+                         side="bottom", anchor="sw", padx=12, pady=(0, 6))
+
+        ctk.CTkButton(left, text="Paramètres", width=140,
+                      fg_color="transparent", border_width=1,
+                      command=self._open_settings).pack(
+                          side="bottom", anchor="sw", padx=12, pady=(4, 2))
 
         # ---- Panneau droit ----
         top_bar = ctk.CTkFrame(right, fg_color="transparent")
@@ -131,13 +142,14 @@ class TurboDownloader(ctk.CTk):
 
         self._filter_btns = {}
         filters = [
-            ("all",         "Tous",       "#1f6aa5"),
-            ("downloading", "En cours",   "#2e8b57"),
-            ("paused",      "En pause",   "#1f6aa5"),
-            ("waiting",     "En attente", "#5a5a5a"),
-            ("done",        "Terminés",   "#2e8b57"),
-            ("canceled",    "Annulés",    "#8B4513"),
-            ("error",       "Erreurs",    "#8B0000"),
+            ("all",         "Tous",        "#1f6aa5"),
+            ("downloading", "En cours",    "#2e8b57"),
+            ("paused",      "En pause",    "#1f6aa5"),
+            ("moving",      "Déplacement", "#5a5a5a"),
+            ("waiting",     "En attente",  "#5a5a5a"),
+            ("done",        "Terminés",    "#2e8b57"),
+            ("canceled",    "Annulés",     "#8B4513"),
+            ("error",       "Erreurs",     "#8B0000"),
         ]
         for fkey, flabel, fcolor in filters:
             btn = ctk.CTkButton(
@@ -191,6 +203,11 @@ class TurboDownloader(ctk.CTk):
         if box["e"]:
             raise box["e"]
         return box["v"]
+
+    def _open_settings(self):
+        def on_save():
+            self._settings = load_settings()
+        SettingsPopup(self, self._settings, on_save)
 
     def choose_folder(self):
         folder = filedialog.askdirectory()
@@ -353,6 +370,7 @@ class TurboDownloader(ctk.CTk):
             "waiting":     "En attente",
             "downloading": "En cours",
             "paused":      "En pause",
+            "moving":      "Déplacement…",
             "done":        "Terminé",
             "error":       f"Erreur: {it.error_msg[:40]}",
             "canceled":    "Annulé",
@@ -403,6 +421,10 @@ class TurboDownloader(ctk.CTk):
             row.pause_btn.configure(state="normal", text="Pause", fg_color="#5a5a5a")
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
+        elif it.state == "moving":
+            row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
+            row.cancel_btn.configure(state="disabled")
+            row.remove_btn.configure(state="disabled")
         else:  # waiting
             row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
             row.cancel_btn.configure(state="normal")
@@ -418,6 +440,7 @@ class TurboDownloader(ctk.CTk):
             "all":         "#1f6aa5",
             "downloading": "#2e8b57",
             "paused":      "#1f6aa5",
+            "moving":      "#5a5a5a",
             "waiting":     "#5a5a5a",
             "done":        "#2e8b57",
             "canceled":    "#8B4513",
@@ -449,6 +472,7 @@ class TurboDownloader(ctk.CTk):
             "all":         "Tous",
             "downloading": "En cours",
             "paused":      "En pause",
+            "moving":      "Déplacement",
             "waiting":     "En attente",
             "done":        "Terminés",
             "canceled":    "Annulés",
@@ -492,6 +516,12 @@ class TurboDownloader(ctk.CTk):
 
     # ----------------------------------------------------------------- Worker de téléchargement
 
+    def _get_temp_path(self, it) -> str:
+        """Retourne le chemin du fichier .part dans le dossier temp."""
+        temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
+        os.makedirs(temp_dir, exist_ok=True)
+        return os.path.join(temp_dir, it.filename + ".part")
+
     def _download_worker(self, idx: int):
         it = self.items[idx]
         it.state = "downloading"
@@ -499,9 +529,16 @@ class TurboDownloader(ctk.CTk):
         it.error_msg = ""
         self.ui(self._update_row_ui, idx)
 
-        # Détection fichier existant → reprise
+        # Chemin du fichier temporaire (.part)
+        temp_path = self._get_temp_path(it)
+        it.temp_path = temp_path
+
+        # Reprise : chercher d'abord un .part existant, sinon le fichier final
         existing_size = 0
-        if os.path.exists(it.dest_path):
+        if os.path.exists(temp_path):
+            existing_size = os.path.getsize(temp_path)
+        elif os.path.exists(it.dest_path):
+            # Fichier final déjà là (DL précédent terminé ?) → skip direct
             existing_size = os.path.getsize(it.dest_path)
 
         it.resume_from = existing_size
@@ -518,6 +555,12 @@ class TurboDownloader(ctk.CTk):
                 if existing_size > 0 and r.status_code == 200:
                     it.resume_from = 0
                     existing_size = 0
+                    # Supprimer le .part obsolète
+                    try:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                    except OSError:
+                        pass
 
                 if r.status_code not in (200, 206):
                     r.raise_for_status()
@@ -530,7 +573,7 @@ class TurboDownloader(ctk.CTk):
                     self.ui(self._refresh_filter_counts)
                     return
 
-                # Taille depuis les headers du stream (pas de requête supplémentaire)
+                # Taille depuis les headers du stream
                 cr = r.headers.get("Content-Range")
                 if cr and "/" in cr:
                     try:
@@ -549,48 +592,93 @@ class TurboDownloader(ctk.CTk):
                     self.ui(self._refresh_filter_counts)
                     return
 
+                # Vérification préventive espace disque sur le temp
+                if it.total_size:
+                    temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
+                    try:
+                        free = shutil.disk_usage(temp_dir).free
+                        needed = it.total_size - existing_size
+                        if free < needed:
+                            it.state = "error"
+                            it.error_msg = (f"Disque temp plein "
+                                            f"({self._fmt_size(free)} libre, "
+                                            f"{self._fmt_size(needed)} requis)")
+                            self.ui(self._update_row_ui, idx)
+                            self.ui(self._refresh_filter_counts)
+                            return
+                    except OSError:
+                        pass  # si disk_usage échoue on continue quand même
+
                 os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
 
                 write_mode = "ab" if existing_size > 0 else "wb"
                 last_ui = 0.0
                 _canceled = False
 
-                with open(it.dest_path, write_mode) as f:
-                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                        if self.stop_all_event.is_set() or it.cancel_event.is_set():
-                            _canceled = True
-                            break
-                        if it.pause_event.is_set():
-                            it.state = "paused"
-                            self.ui(self._update_row_ui, idx)
-                            self.ui(self._refresh_filter_counts)
-                            return
-                        if not chunk:
-                            continue
+                try:
+                    with open(temp_path, write_mode) as f:
+                        for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                            if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                                _canceled = True
+                                break
+                            if it.pause_event.is_set():
+                                it.state = "paused"
+                                self.ui(self._update_row_ui, idx)
+                                self.ui(self._refresh_filter_counts)
+                                return
+                            if not chunk:
+                                continue
 
-                        f.write(chunk)
-                        n = len(chunk)
-                        it.downloaded += n
-                        it.speed_window.append((time.time(), n))
-                        self._record_bytes(n)
+                            f.write(chunk)
+                            n = len(chunk)
+                            it.downloaded += n
+                            it.speed_window.append((time.time(), n))
+                            self._record_bytes(n)
 
-                        now = time.time()
-                        if now - last_ui >= 0.20:
-                            last_ui = now
-                            self.ui(self._update_row_ui, idx)
+                            now = time.time()
+                            if now - last_ui >= 0.20:
+                                last_ui = now
+                                self.ui(self._update_row_ui, idx)
 
-                # Fichier fermé proprement — suppression possible maintenant
+                except OSError as e:
+                    if "No space left" in str(e) or e.errno == 28:
+                        it.state = "error"
+                        it.error_msg = "Disque temp plein pendant le téléchargement"
+                    else:
+                        it.state = "error"
+                        it.error_msg = str(e)
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    return
+
+                # Fichier .part fermé proprement
                 if _canceled:
                     it.state = "canceled"
                     self.ui(self._update_row_ui, idx)
                     self.ui(self._refresh_filter_counts)
                     try:
-                        if os.path.exists(it.dest_path):
-                            os.remove(it.dest_path)
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
                     except OSError:
                         pass
                     return
 
+                # DL terminé → déplacer vers la destination finale
+                it.state = "moving"
+                self.ui(self._update_row_ui, idx)
+                self.ui(self._refresh_filter_counts)
+
+                try:
+                    os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+                    shutil.move(temp_path, it.dest_path)
+                except OSError as e:
+                    it.state = "error"
+                    it.error_msg = f"Erreur déplacement : {e}"
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    return
+
+                it.temp_path = ""
                 it.state = "done"
                 self.ui(self._update_row_ui, idx)
                 self.ui(self._refresh_filter_counts)
@@ -721,6 +809,7 @@ class TurboDownloader(ctk.CTk):
                     it.state        = "waiting"
                     it.cancel_event = threading.Event()
                     it.pause_event  = threading.Event()
+                    it.temp_path    = ""
                     it.speed_window.clear()
                     self._update_row_ui(existing_idx)
                     new_indices.append(existing_idx)
@@ -767,9 +856,12 @@ class TurboDownloader(ctk.CTk):
                     it.state = "canceled"
                     self._update_row_ui(idx)
                     # Supprimer le fichier partiel (le worker est déjà sorti)
-                    try:
-                        if os.path.exists(it.dest_path):
-                            os.remove(it.dest_path)
-                    except OSError:
-                        pass
+                    # Supprimer le .part temp et le fichier partiel
+                    for path in [it.temp_path, it.dest_path]:
+                        if path:
+                            try:
+                                if os.path.exists(path):
+                                    os.remove(path)
+                            except OSError:
+                                pass
         self.ui(mark)
