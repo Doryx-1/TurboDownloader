@@ -36,6 +36,7 @@ class TurboDownloader(ctk.CTk):
 
         self.title("TurboDownloader")
         self.geometry("1360x860")
+        self.iconbitmap("icon.ico")
 
         # Thread-safe queue for UI updates
         self.uiq: "queue.Queue[tuple]" = queue.Queue()
