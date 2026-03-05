@@ -41,6 +41,7 @@ class FileTreeNode:
         self._row_frame  = None         # frame-ligne dans le scroll
         self._expand_btn = None         # bouton ▼/▶ (dossiers uniquement)
         self._expanded   = True
+        self._search_hidden = False     # masqué par le filtre de recherche
 
 
 class FileTreePopup(ctk.CTkToplevel):
@@ -133,6 +134,23 @@ class FileTreePopup(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
         self._count_lbl = ctk.CTkLabel(top, text="", text_color="gray")
         self._count_lbl.pack(side="right")
+
+        # ── Barre de recherche ─────────────────────────────────────────────
+        search_bar = ctk.CTkFrame(self, fg_color="transparent")
+        search_bar.pack(fill="x", padx=14, pady=(0, 4))
+        self._search_var = ctk.StringVar()
+        self._search_var.trace_add("write", lambda *_: self._on_search())
+        search_entry = ctk.CTkEntry(
+            search_bar,
+            placeholder_text="🔍  Rechercher un fichier ou dossier…",
+            textvariable=self._search_var,
+        )
+        search_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(
+            search_bar, text="✕", width=32,
+            fg_color="transparent", border_width=1,
+            command=self._clear_search,
+        ).pack(side="left")
 
         btn_bar = ctk.CTkFrame(self, fg_color="transparent")
         btn_bar.pack(fill="x", padx=14, pady=(0, 6))
@@ -239,12 +257,7 @@ class FileTreePopup(ctk.CTkToplevel):
 
         # Repacker toutes les lignes dans le nouvel ordre DFS
         # On dépaque tout d'abord, puis on repaque dans l'ordre (en respectant la visibilité)
-        for node in self._all_nodes:
-            node._row_frame.pack_forget()
-
-        for node in self._all_nodes:
-            if self._is_visible(node):
-                node._row_frame.pack(fill="x", pady=0)
+        self._repack_all()
 
     def _sort_nodes(self, nodes: list, mode: str):
         """Tri récursif en place de la liste de nœuds et de leurs enfants."""
@@ -278,6 +291,63 @@ class FileTreePopup(ctk.CTkToplevel):
             if node.is_dir and node.children:
                 self._sort_nodes(node.children, mode)
 
+    # ---------------------------------------------------------------- Recherche
+
+    def _on_search(self):
+        query = self._search_var.get().strip().lower()
+
+        if not query:
+            # Tout réafficher — remettre _search_hidden à False partout
+            for node in self._all_nodes:
+                node._search_hidden = False
+        else:
+            # 1. Marquer tous les nœuds comme cachés par défaut
+            for node in self._all_nodes:
+                node._search_hidden = True
+
+            # 2. Pour chaque fichier (feuille) dont le nom matche : le rendre visible
+            #    + remonter la chaîne de dossiers parents pour les rendre visibles aussi
+            for node in self._all_nodes:
+                if not node.is_dir and query in node.name.lower():
+                    node._search_hidden = False
+                    p = node.parent
+                    while p:
+                        p._search_hidden = False
+                        p = p.parent
+
+            # 3. Les dossiers dont le NOM matche sont aussi visibles (avec tout leur contenu)
+            for node in self._all_nodes:
+                if node.is_dir and query in node.name.lower():
+                    self._show_subtree(node)
+
+        # Repacker toutes les lignes selon la nouvelle visibilité
+        self._repack_all()
+
+    def _show_subtree(self, node: FileTreeNode):
+        """Rend visible un nœud et tous ses descendants (pour les dossiers dont le nom matche)."""
+        node._search_hidden = False
+        # Remonter les parents aussi
+        p = node.parent
+        while p:
+            p._search_hidden = False
+            p = p.parent
+        # Descendre les enfants
+        for child in node.children:
+            child._search_hidden = False
+            if child.is_dir:
+                self._show_subtree(child)
+
+    def _clear_search(self):
+        self._search_var.set("")
+
+    def _repack_all(self):
+        """Dépaque tout puis repaque dans l'ordre DFS en respectant _is_visible()."""
+        for node in self._all_nodes:
+            node._row_frame.pack_forget()
+        for node in self._all_nodes:
+            if self._is_visible(node):
+                node._row_frame.pack(fill="x", pady=0)
+
     # ---------------------------------------------------------------- Expand / collapse
 
     def _toggle_expand(self, node: FileTreeNode):
@@ -295,10 +365,12 @@ class FileTreePopup(ctk.CTkToplevel):
         return result
 
     def _is_visible(self, node: FileTreeNode) -> bool:
-        """Un nœud est visible si tous ses ancêtres sont expanded."""
+        """Un nœud est visible si : non masqué par la recherche ET tous ses ancêtres sont expanded."""
+        if node._search_hidden:
+            return False
         p = node.parent
         while p:
-            if not p._expanded:
+            if not p._expanded or p._search_hidden:
                 return False
             p = p.parent
         return True
