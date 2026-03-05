@@ -89,6 +89,22 @@ Config and history are stored in `~/.turbodownloader/`.
 
 ---
 
+## Legal disclaimer
+
+TurboDownloader is designed to download files from HTTP servers **that you own, administrate, or have explicit permission to access** — such as your own Jellyfin, Plex, or Emby instance, or any server whose operator has granted you download rights.
+
+**This tool is provided for lawful purposes only.** The author does not endorse, encourage, or condone the use of this software to:
+- download copyrighted content without authorization,
+- bypass access controls or authentication mechanisms,
+- infringe on the intellectual property rights of any individual or organization,
+- or violate any applicable local, national, or international law.
+
+**You are solely responsible for how you use this software.** By using TurboDownloader, you agree that the author cannot be held liable for any misuse, damage, legal action, or consequence arising from your use of this tool. The author provides this software "as is", without warranty of any kind, and expressly disclaims any responsibility for unlawful or unauthorized use.
+
+If you are unsure whether downloading a particular resource is legal in your jurisdiction, do not use this tool for that purpose.
+
+---
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
