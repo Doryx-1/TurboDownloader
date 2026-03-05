@@ -1,5 +1,5 @@
 """
-taskbar.py — Barre de progression dans la barre des tâches Windows.
+taskbar.py — Barre de progression in la barre des tâches Windows.
 Utilise comtypes pour accéder à ITaskbarList3.
 Fallback silencieux si non disponible ou hors Windows.
 """
@@ -9,7 +9,7 @@ import ctypes
 
 _TASKBAR_OK = False
 
-# États ITaskbarList3
+# ITaskbarList3 states
 TBPF_NOPROGRESS    = 0x0
 TBPF_INDETERMINATE = 0x1
 TBPF_NORMAL        = 0x2
@@ -21,9 +21,9 @@ if sys.platform == "win32":
         import comtypes
         import comtypes.client
 
-        # ── Définition complète de ITaskbarList3 ──────────────────────────
-        # On déclare l'interface COM avec tous ses ancêtres pour que
-        # CreateObject(..., interface=ITaskbarList3) fonctionne correctement.
+        # ── Full ITaskbarList3 interface definition ───────────────────
+        # Declare the COM interface with all ancestors so that
+        # CreateObject(..., interface=ITaskbarList3) works correctly.
 
         class ITaskbarList3(comtypes.IUnknown):
             _case_insensitive_ = True
@@ -58,15 +58,15 @@ if sys.platform == "win32":
         print("[taskbar] comtypes disponible, ITaskbarList3 défini")
 
     except Exception as e:
-        print(f"[taskbar] non disponible: {e}")
+        print(f"[taskbar] not available: {e}")
 else:
-    print("[taskbar] non-Windows, désactivé")
+    print("[taskbar] non-Windows system, disabled")
 
 
 class TaskbarProgress:
     """
-    Contrôle la barre de progression de la taskbar Windows.
-    Toutes les méthodes sont no-op silencieux si comtypes est absent.
+    Controls the Windows taskbar progress bar.
+    All methods are silent no-ops if comtypes is unavailable.
     """
 
     def __init__(self, hwnd: int):
@@ -85,14 +85,14 @@ class TaskbarProgress:
             obj.HrInit()
             self._tbl    = obj
             self._active = True
-            print(f"[taskbar] initialisé (hwnd={hwnd})")
+            print(f"[taskbar] initialized (hwnd={hwnd})")
         except Exception as e:
-            print(f"[taskbar] échec init: {e}")
+            print(f"[taskbar] init failed: {e}")
 
-    # ---------------------------------------------------------------- API publique
+    # ---------------------------------------------------------------- Public API
 
     def set_progress(self, ratio: float):
-        """Barre verte — ratio entre 0.0 et 1.0."""
+        """Green bar — ratio between 0.0 and 1.0."""
         if not self._active:
             return
         try:
@@ -104,7 +104,7 @@ class TaskbarProgress:
             self._active = False
 
     def set_indeterminate(self):
-        """Barre animée (taille inconnue)."""
+        """Animated bar (unknown size)."""
         if not self._active:
             return
         try:
@@ -114,7 +114,7 @@ class TaskbarProgress:
             self._active = False
 
     def set_error(self):
-        """Barre rouge."""
+        """Red bar."""
         if not self._active:
             return
         try:
@@ -124,7 +124,7 @@ class TaskbarProgress:
             self._active = False
 
     def set_paused(self):
-        """Barre jaune."""
+        """Yellow bar."""
         if not self._active:
             return
         try:
@@ -134,7 +134,7 @@ class TaskbarProgress:
             self._active = False
 
     def clear(self):
-        """Supprime la barre (idle)."""
+        """Clears the bar (idle state)."""
         if not self._active:
             return
         try:

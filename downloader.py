@@ -23,7 +23,7 @@ from notifier import notify_batch_done
 from taskbar import TaskbarProgress
 
 
-CHUNK_SIZE = 1024 * 512  # 512 KB
+CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
 
 
 class TurboDownloader(ctk.CTk):
@@ -37,10 +37,10 @@ class TurboDownloader(ctk.CTk):
         self.title("TurboDownloader")
         self.geometry("1360x860")
 
-        # File d'attente thread-safe pour les mises à jour UI
+        # Thread-safe queue for UI updates
         self.uiq: "queue.Queue[tuple]" = queue.Queue()
 
-        # Session HTTP partagée entre tous les workers
+        # Shared HTTP session across all workers
         self.req = requests.Session()
         self.req.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -49,36 +49,36 @@ class TurboDownloader(ctk.CTk):
         })
 
         self.download_path: Optional[str] = None
-        self.items: dict[int, DownloadItem] = {}  # idx → item (pas de trous)
-        self._next_idx: int = 0                    # prochain index à attribuer
+        self.items: dict[int, DownloadItem] = {}  # idx → item (no gaps)
+        self._next_idx: int = 0                    # next index to assign
         self.rows: dict[int, DownloadRow] = {}
         self.executor: Optional[ThreadPoolExecutor] = None
         self.stop_all_event = threading.Event()
         self._scan_cancel_event = threading.Event()  # interrompt le crawl en cours
 
-        # Vitesse globale — fenêtre glissante sur 3 s
+        # Global speed — 3s sliding window
         self._speed_lock = threading.Lock()
         self._speed_samples: deque = deque()    # (timestamp, bytes)
         self._global_total_bytes = 0
 
-        # Throttle — compteur partagé entre tous les workers
+        # Throttle — shared counter across all workers
         self._throttle_lock = threading.Lock()
         self._throttle_window_start = time.time()
         self._throttle_bytes_this_second = 0
 
-        # Filtre actif dans la liste de droite
+        # Filtre actif in la liste de droite
         self._active_filter = "all"
 
-        # Paramètres (temp dir, etc.)
+        # Settings (temp dir, etc.)
         self._settings = load_settings()
 
-        # Historique des téléchargements
+        # History des téléchargements
         self._history = HistoryManager()
 
         self._build_ui()
 
-        # Taskbar Windows — initialisé après _build_ui (besoin du HWND)
-        # On diffère légèrement pour laisser Tk créer la fenêtre
+        # Windows taskbar — initialized after _build_ui (needs HWND)
+        # Slight delay to let Tk create the window first
         self._taskbar: TaskbarProgress = None
         self.after(500, self._init_taskbar)
 
@@ -87,12 +87,12 @@ class TurboDownloader(ctk.CTk):
 
     @property
     def _active_extensions(self) -> tuple:
-        """Retourne les extensions activées dans les settings (tuple pour endswith)."""
+        """Retourne les extensions activées in les settings (tuple pour endswith)."""
         exts = self._settings.get("extensions", DEFAULT_EXTENSIONS)
         return tuple(ext for ext, enabled in exts.items() if enabled) or (".mkv", ".mp4")
 
     def _init_taskbar(self):
-        """Initialise la barre de progression taskbar (Windows uniquement)."""
+        """Initializes the taskbar progress bar (Windows only)."""
         try:
             hwnd = self.winfo_id()
             self._taskbar = TaskbarProgress(hwnd)
@@ -113,35 +113,35 @@ class TurboDownloader(ctk.CTk):
         right = ctk.CTkFrame(main)
         right.pack(side="right", fill="both", expand=True)
 
-        # ---- Panneau gauche ----
-        ctk.CTkLabel(left, text="URL(s) — une par ligne").pack(anchor="w", padx=12, pady=(12, 0))
+        # ---- Left panel ----
+        ctk.CTkLabel(left, text="URL(s) — one per line").pack(anchor="w", padx=12, pady=(12, 0))
         self.url_box = ctk.CTkTextbox(left, width=340, height=90,
                                       wrap="none", activate_scrollbars=True)
         self.url_box.pack(padx=12, pady=(4, 2), fill="x")
-        ctk.CTkLabel(left, text="Colle plusieurs URLs, une par ligne.",
+        ctk.CTkLabel(left, text="Paste multiple URLs, one per line.",
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(
                          anchor="w", padx=12, pady=(0, 4))
 
-        ctk.CTkButton(left, text="Choisir dossier de destination",
+        ctk.CTkButton(left, text="Choose destination folder",
                       command=self.choose_folder).pack(padx=12, pady=(4, 2), fill="x")
-        self.folder_label = ctk.CTkLabel(left, text="Dossier: (non choisi)",
+        self.folder_label = ctk.CTkLabel(left, text="Folder: (not selected)",
                                          wraplength=340, justify="left", text_color="gray")
         self.folder_label.pack(anchor="w", padx=12, pady=(0, 8))
 
         self.keep_tree_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(left, text="Conserver l'arborescence originale",
+        ctk.CTkCheckBox(left, text="Keep original folder structure",
                         variable=self.keep_tree_var).pack(anchor="w", padx=12, pady=(0, 10))
 
-        ctk.CTkLabel(left, text="Téléchargements simultanés (1–20)").pack(anchor="w", padx=12)
+        ctk.CTkLabel(left, text="Simultaneous downloads (1–20)").pack(anchor="w", padx=12)
         self.worker_entry = ctk.CTkEntry(left, width=80)
         self.worker_entry.insert(0, "8")
         self.worker_entry.pack(anchor="w", padx=12, pady=6)
 
-        self.global_speed_label = ctk.CTkLabel(left, text="Vitesse globale: –",
+        self.global_speed_label = ctk.CTkLabel(left, text="Global speed: –",
                                                font=ctk.CTkFont(size=14, weight="bold"))
         self.global_speed_label.pack(anchor="w", padx=12, pady=(6, 2))
 
-        self.global_dl_label = ctk.CTkLabel(left, text="Total téléchargé: 0 MB",
+        self.global_dl_label = ctk.CTkLabel(left, text="Total downloaded: 0 MB",
                                             text_color="gray")
         self.global_dl_label.pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -154,27 +154,27 @@ class TurboDownloader(ctk.CTk):
                                       command=self.stop_all, fg_color="#8B0000")
         self.stop_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
-        ctk.CTkButton(left, text="Effacer terminés/annulés",
+        ctk.CTkButton(left, text="Clear finished/canceled",
                       command=self.clear_finished).pack(fill="x", padx=12, pady=(6, 4))
 
         ctk.CTkLabel(left, text="TurboDownloader • © Thomas PIERRE",
                      font=ctk.CTkFont(size=11), text_color="gray").pack(
                          side="bottom", anchor="sw", padx=12, pady=(0, 6))
 
-        # Ligne boutons bas (Paramètres + Historique côte à côte)
+        # Ligne boutons bas (Settings + History côte à côte)
         bot_btns = ctk.CTkFrame(left, fg_color="transparent")
         bot_btns.pack(side="bottom", fill="x", padx=12, pady=(4, 2))
-        ctk.CTkButton(bot_btns, text="Paramètres",
+        ctk.CTkButton(bot_btns, text="Settings",
                       fg_color="transparent", border_width=1,
                       command=self._open_settings).pack(side="left", expand=True, fill="x", padx=(0, 4))
-        ctk.CTkButton(bot_btns, text="Historique",
+        ctk.CTkButton(bot_btns, text="History",
                       fg_color="transparent", border_width=1,
                       command=self._open_history).pack(side="left", expand=True, fill="x", padx=(4, 0))
 
-        # ---- Panneau droit ----
+        # ---- Right panel ----
         top_bar = ctk.CTkFrame(right, fg_color="transparent")
         top_bar.pack(fill="x", padx=10, pady=(10, 4))
-        ctk.CTkLabel(top_bar, text="Téléchargements",
+        ctk.CTkLabel(top_bar, text="Downloads",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
 
         filter_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
@@ -182,14 +182,14 @@ class TurboDownloader(ctk.CTk):
 
         self._filter_btns = {}
         filters = [
-            ("all",         "Tous",        "#1f6aa5"),
-            ("downloading", "En cours",    "#2e8b57"),
-            ("paused",      "En pause",    "#1f6aa5"),
-            ("moving",      "Déplacement", "#5a5a5a"),
-            ("waiting",     "En attente",  "#5a5a5a"),
-            ("done",        "Terminés",    "#2e8b57"),
-            ("canceled",    "Annulés",     "#8B4513"),
-            ("error",       "Erreurs",     "#8B0000"),
+            ("all",         "All",        "#1f6aa5"),
+            ("downloading", "Downloading",    "#2e8b57"),
+            ("paused",      "Paused",    "#1f6aa5"),
+            ("moving",      "Moving", "#5a5a5a"),
+            ("waiting",     "Waiting",  "#5a5a5a"),
+            ("done",        "Done",    "#2e8b57"),
+            ("canceled",    "Canceled",     "#8B4513"),
+            ("error",       "Errors",     "#8B0000"),
         ]
         for fkey, flabel, fcolor in filters:
             btn = ctk.CTkButton(
@@ -207,7 +207,7 @@ class TurboDownloader(ctk.CTk):
     # ---------------------------------------------------------------- Thread-safe UI helpers
 
     def ui(self, fn, *args, **kwargs):
-        """Enfile une fonction à exécuter sur le thread UI."""
+        """Queues a function to run on the UI thread."""
         self.uiq.put((fn, args, kwargs))
 
     def _process_ui_queue(self):
@@ -224,7 +224,7 @@ class TurboDownloader(ctk.CTk):
 
     def ui_call(self, fn, *args, **kwargs):
         """Appel synchrone depuis un thread background → attend la réponse du thread UI.
-        Lève RuntimeError si le thread UI ne répond pas dans les 10 secondes.
+        Lève RuntimeError si le thread UI ne répond pas in les 10 secondes.
         """
         ev = threading.Event()
         box = {"v": None, "e": None}
@@ -245,13 +245,13 @@ class TurboDownloader(ctk.CTk):
         return box["v"]
 
     def _get_urls(self) -> list[str]:
-        """Retourne la liste des URLs saisies.
-        Séparateurs acceptés : saut de ligne OU espace(s).
-        Les entrées vides et les doublons sont ignorés, l'ordre est conservé.
+        """Returns the list of entered URLs.
+        Accepted separators: newline OR space(s).
+        Empty entries and duplicates are ignored, order is preserved.
         """
         raw = self.url_box.get("1.0", "end").strip()
-        tokens = raw.split()   # split() sans arg = tout whitespace (espace, tab, newline)
-        # Garder uniquement ce qui ressemble à une URL (commence par http)
+        tokens = raw.split()   # split() with no arg splits on any whitespace (space, tab, newline)
+        # Keep only tokens that look like a URL (start with http)
         seen = set()
         urls = []
         for t in tokens:
@@ -263,7 +263,7 @@ class TurboDownloader(ctk.CTk):
 
     def _open_settings(self):
         def on_save():
-            # Mettre à jour le dict existant en place (pas de nouvelle référence)
+            # Update the existing dict in place (no reference reassignment)
             self._settings.update(load_settings())
         SettingsPopup(self, self._settings, on_save)
 
@@ -284,8 +284,8 @@ class TurboDownloader(ctk.CTk):
 
     def get_all_files(self, url: str, base_url: str = None,
                       cancel_event: threading.Event = None) -> list:
-        """Scrape récursivement et retourne liste de (file_url, relative_path).
-        S'arrête proprement si cancel_event est set (STOP ou timeout).
+        """Recursively scrapes and returns a list of (file_url, relative_path).
+        Stops cleanly if cancel_event is set (STOP or timeout).
         """
         if base_url is None:
             base_url = url
@@ -323,7 +323,7 @@ class TurboDownloader(ctk.CTk):
                 rel_dir = os.path.dirname(rel)
                 results.append((full, rel_dir))
 
-        # Déduplique en préservant l'ordre
+        # Deduplicate while preserving order
         seen = set()
         unique = []
         for item in results:
@@ -350,18 +350,18 @@ class TurboDownloader(ctk.CTk):
             it.cancel_event.set()
             row = self.rows.get(idx)
             if row and it.state in ("waiting", "downloading"):
-                row.status.configure(text="Annulation…")
+                row.status.configure(text="Canceling…")
 
     def pause_one(self, idx: int):
-        """Bascule pause ↔ reprise sur une ligne individuelle."""
+        """Toggles pause ↔ resume on an individual download row."""
         if idx not in self.items:
             return
         it = self.items[idx]
         if it.state == "downloading":
-            # Mettre en pause
+            # Pause
             it.pause_event.set()
         elif it.state == "paused":
-            # Reprendre
+            # Resume
             it.pause_event.clear()
             it.cancel_event.clear()
             it.state = "waiting"
@@ -390,7 +390,7 @@ class TurboDownloader(ctk.CTk):
             if it and it.state in ("done", "error", "canceled", "skipped"):
                 self.remove_one(idx)
 
-    # ----------------------------------------------------------------- Formatage
+    # ----------------------------------------------------------------- Formatting
 
     @staticmethod
     def _fmt_speed(bps: float) -> str:
@@ -423,7 +423,7 @@ class TurboDownloader(ctk.CTk):
             return f"{b/1024/1024:.1f} MB"
         return f"{b/1024**3:.2f} GB"
 
-    # ----------------------------------------------------------------- Mise à jour UI d'une row
+    # ----------------------------------------------------------------- Row UI update
 
     def _update_row_ui(self, idx: int):
         it = self.items[idx]
@@ -432,18 +432,18 @@ class TurboDownloader(ctk.CTk):
             return
 
         state_labels = {
-            "waiting":     "En attente",
-            "downloading": "En cours",
-            "paused":      "En pause",
-            "moving":      "Déplacement…",
-            "done":        "Terminé",
+            "waiting":     "Waiting",
+            "downloading": "Downloading",
+            "paused":      "Paused",
+            "moving":      "Moving…",
+            "done":        "Done",
             "error":       f"Erreur: {it.error_msg[:40]}",
-            "canceled":    "Annulé",
-            "skipped":     "Existant (ignoré)",
+            "canceled":    "Canceled",
+            "skipped":     "Already exists (skipped)",
         }
         row.status.configure(text=state_labels.get(it.state, it.state))
 
-        # Vitesse instantanée via fenêtre glissante
+        # Instantaneous speed via sliding window
         now = time.time()
         win = it.speed_window
         while win and now - win[0][0] > 4.0:
@@ -479,7 +479,7 @@ class TurboDownloader(ctk.CTk):
             if it.state == "done":
                 row.progress.set(1.0)
         elif it.state == "paused":
-            row.pause_btn.configure(state="normal", text="Reprendre", fg_color="#1f6aa5")
+            row.pause_btn.configure(state="normal", text="Resume", fg_color="#1f6aa5")
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
         elif it.state == "downloading":
@@ -497,7 +497,7 @@ class TurboDownloader(ctk.CTk):
 
         self._apply_filter_to_row(idx)
 
-    # ----------------------------------------------------------------- Filtres
+    # ----------------------------------------------------------------- Filters
 
     def _set_filter(self, fkey: str):
         self._active_filter = fkey
@@ -534,22 +534,22 @@ class TurboDownloader(ctk.CTk):
             if it.state in counts:
                 counts[it.state] += 1
         labels = {
-            "all":         "Tous",
-            "downloading": "En cours",
-            "paused":      "En pause",
-            "moving":      "Déplacement",
-            "waiting":     "En attente",
-            "done":        "Terminés",
-            "canceled":    "Annulés",
-            "error":       "Erreurs",
+            "all":         "All",
+            "downloading": "Downloading",
+            "paused":      "Paused",
+            "moving":      "Moving",
+            "waiting":     "Waiting",
+            "done":        "Done",
+            "canceled":    "Canceled",
+            "error":       "Errors",
         }
         for k, btn in self._filter_btns.items():
             btn.configure(text=f"{labels[k]} ({counts.get(k, 0)})")
 
-    # ----------------------------------------------------------------- Vitesse globale
+    # ----------------------------------------------------------------- Global speed
 
     def _record_bytes(self, n: int):
-        """Enregistre n octets téléchargés — appelé depuis les workers."""
+        """Records n downloaded bytes — called from worker threads."""
         now = time.time()
         with self._speed_lock:
             self._speed_samples.append((now, n))
@@ -575,10 +575,10 @@ class TurboDownloader(ctk.CTk):
             speed = 0.0
 
         speed_text = "–" if speed == 0.0 else self._fmt_speed(speed)
-        self.global_speed_label.configure(text=f"Vitesse globale: {speed_text}")
-        self.global_dl_label.configure(text=f"Total téléchargé: {self._fmt_size(total)}")
+        self.global_speed_label.configure(text=f"Global speed: {speed_text}")
+        self.global_dl_label.configure(text=f"Total downloaded: {self._fmt_size(total)}")
 
-        # ── Mise à jour taskbar ────────────────────────────────────────
+        # ── Taskbar update ────────────────────────────────────────────
         if self._taskbar:
             active = [it for it in self.items.values()
                       if it.state in ("downloading", "moving", "waiting", "paused")]
@@ -607,13 +607,13 @@ class TurboDownloader(ctk.CTk):
 
         self.after(1000, self._tick_global_speed)
 
-    # ----------------------------------------------------------------- Worker de téléchargement
+    # ----------------------------------------------------------------- Download worker
 
     def _throttle_chunk(self, n: int):
-        """Ralentit le worker si la limite globale de bande passante est atteinte.
-        n = nombre d'octets venant d'être écrits.
-        La limite est répartie entre tous les workers — le sleep se fait
-        HORS du lock pour ne pas bloquer les autres workers pendant l'attente.
+        """Throttles the worker if the global bandwidth limit is reached.
+        n = number of bytes just written.
+        The limit is shared across all workers — sleep happens
+        OUTSIDE the lock so other workers are not blocked during the wait.
         """
         limit_bps = self._settings.get("throttle", 0)
         if not limit_bps or limit_bps <= 0:
@@ -624,7 +624,7 @@ class TurboDownloader(ctk.CTk):
 
         with self._throttle_lock:
             now = time.time()
-            # Réinitialiser la fenêtre à chaque nouvelle seconde
+            # Reset the window every new second
             if now - self._throttle_window_start >= 1.0:
                 self._throttle_window_start = now
                 self._throttle_bytes_this_second = 0
@@ -632,24 +632,24 @@ class TurboDownloader(ctk.CTk):
             self._throttle_bytes_this_second += n
 
             if self._throttle_bytes_this_second >= limit_bps_bytes:
-                # Calculer le temps à attendre avant la prochaine fenêtre
+                # Compute wait time until the next window
                 elapsed = time.time() - self._throttle_window_start
                 sleep_time = max(0.0, 1.0 - elapsed)
-                # Réinitialiser pour la prochaine seconde
+                # Reset for the next second
                 self._throttle_window_start = time.time() + sleep_time
                 self._throttle_bytes_this_second = 0
 
-        # Sleep HORS du lock — les autres workers continuent pendant ce temps
+        # Sleep OUTSIDE the lock — other workers keep running during the wait
         if sleep_time > 0:
             time.sleep(sleep_time)
 
     def _get_temp_path(self, it) -> str:
-        """Retourne le chemin du fichier .part dans le dossier temp."""
+        """Retourne le chemin du fichier .part in le dossier temp."""
         temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
         os.makedirs(temp_dir, exist_ok=True)
         return os.path.join(temp_dir, it.filename + ".part")
 
-    # Erreurs réseau qui déclenchent un retry (pas les erreurs "métier")
+    # Errors réseau qui déclenchent un retry (pas les erreurs "métier")
     _RETRYABLE = (
         "timeout", "connectionerror", "chunkedencodingerror",
         "remotedisconnected", "connectionreset", "connectionaborted",
@@ -662,14 +662,14 @@ class TurboDownloader(ctk.CTk):
 
     def _download_multipart(self, idx: int, n_seg: int) -> str:
         """
-        Télécharge it.url en n_seg segments parallèles.
-        Retourne : "done" | "canceled" | "paused" | "error" | "retry"
+        Downloads it.url in n_seg parallel segments.
+        Returns: "done" | "canceled" | "paused" | "error" | "retry"
         """
         it = self.items[idx]
         total = it.total_size          # garanti non-None à cet appel
         temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
 
-        # ── Calculer les plages de chaque segment ──────────────────────────
+        # ── Compute byte range for each segment ──────────────────────────
         seg_size = total // n_seg
         segments: list[SegmentInfo] = []
         for i in range(n_seg):
@@ -677,7 +677,7 @@ class TurboDownloader(ctk.CTk):
             end   = (start + seg_size - 1) if i < n_seg - 1 else (total - 1)
             tp    = os.path.join(temp_dir, f"{it.filename}.part.{i}")
             seg   = SegmentInfo(index=i, byte_start=start, byte_end=end, temp_path=tp)
-            # Reprise : si le .part.N existe déjà et est complet, on le marque done
+            # Resume: if .part.N already exists and is complete, mark it done
             if os.path.exists(tp):
                 got = os.path.getsize(tp)
                 expected = end - start + 1
@@ -689,10 +689,10 @@ class TurboDownloader(ctk.CTk):
             segments.append(seg)
         it.segments = segments
 
-        # Mise à jour du downloaded global depuis les segments déjà présents
+        # Update global downloaded count from already-present segments
         it.downloaded = sum(s.downloaded for s in segments)
 
-        # ── Lancer les segments non terminés en parallèle ─────────────────
+        # ── Launch pending segments in parallel ──────────────────────────
         pending = [s for s in segments if not s.done]
         seg_lock = threading.Lock()
 
@@ -702,15 +702,15 @@ class TurboDownloader(ctk.CTk):
             f = seg_executor.submit(self._download_segment, idx, seg, seg_lock)
             seg_futures.append(f)
 
-        # ── Attendre la completion (ou annulation) ─────────────────────────
+        # ── Wait for completion (or cancellation) ────────────────────────
         seg_executor.shutdown(wait=True)
 
-        # ── Vérifier l'état final ──────────────────────────────────────────
+        # ── Check final state ────────────────────────────────────────────
         if self.stop_all_event.is_set() or it.cancel_event.is_set():
             it.state = "canceled"
             self.ui(self._update_row_ui, idx)
             self.ui(self._refresh_filter_counts)
-            # Nettoyage des .part.N
+            # Clean up .part.N files
             for seg in segments:
                 try:
                     if os.path.exists(seg.temp_path):
@@ -720,17 +720,17 @@ class TurboDownloader(ctk.CTk):
             return "canceled"
 
         if it.state == "paused":
-            # Les segments ont sauvegardé leur progression, on garde les .part.N
+            # Segments saved their progress, keep .part.N files for resume
             return "paused"
 
-        # Vérifier si un segment est en erreur
+        # Check if any segment failed
         failed = [s for s in segments if s.error]
         if failed:
             err = failed[0].error
             retry_max = int(self._settings.get("retry_max", 3))
             if self._is_retryable(Exception(err)) and it.retry_count < retry_max:
                 it.retry_count += 1
-                # Nettoyer seulement les segments échoués (les bons sont gardés)
+                # Only clean up failed segments (successful ones are kept)
                 for s in failed:
                     try:
                         if os.path.exists(s.temp_path):
@@ -745,7 +745,7 @@ class TurboDownloader(ctk.CTk):
             self.ui(self._refresh_filter_counts)
             return "error"
 
-        # ── Tous les segments OK → assemblage ─────────────────────────────
+        # ── All les segments OK → assemblage ─────────────────────────────
         it.state = "moving"
         self.ui(self._update_row_ui, idx)
         self.ui(self._refresh_filter_counts)
@@ -764,7 +764,7 @@ class TurboDownloader(ctk.CTk):
             shutil.move(assembly_path, it.dest_path)
         except OSError as e:
             it.state     = "error"
-            it.error_msg = f"Erreur assemblage : {e}"
+            it.error_msg = f"Assembly error: {e}"
             self.ui(self._update_row_ui, idx)
             self.ui(self._refresh_filter_counts)
             return "error"
@@ -783,10 +783,10 @@ class TurboDownloader(ctk.CTk):
 
     def _download_segment(self, idx: int, seg: SegmentInfo,
                            seg_lock: threading.Lock):
-        """Worker pour un segment. Télécharge seg.byte_start+seg.downloaded → seg.byte_end."""
+        """Worker for a single segment. Downloads from seg.byte_start+seg.downloaded to seg.byte_end."""
         it = self.items[idx]
 
-        # Calculer l'offset réel (reprise du segment)
+        # Compute actual start offset (segment resume)
         start_actual = seg.byte_start + seg.downloaded
         if start_actual > seg.byte_end:
             seg.done = True
@@ -806,13 +806,13 @@ class TurboDownloader(ctk.CTk):
                 with open(seg.temp_path, write_mode) as f:
                     for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
-                            return   # canceled — on garde le .part.N pour reprise
+                            return   # canceled — keep .part.N for resume
 
                         if it.pause_event.is_set():
                             it.state = "paused"
                             self.ui(self._update_row_ui, idx)
                             self.ui(self._refresh_filter_counts)
-                            return   # paused — on garde le .part.N
+                            return   # paused — keep .part.N
 
                         if not chunk:
                             continue
@@ -844,7 +844,7 @@ class TurboDownloader(ctk.CTk):
         retry_delay = int(self._settings.get("retry_delay", 5))
 
         while True:
-            # ── Sortie propre si annulé entre deux tentatives ──────────────
+            # ── Clean exit if canceled between retries ───────────────────
             if self.stop_all_event.is_set() or it.cancel_event.is_set():
                 it.state = "canceled"
                 self.ui(self._update_row_ui, idx)
@@ -856,11 +856,11 @@ class TurboDownloader(ctk.CTk):
             it.error_msg  = ""
             self.ui(self._update_row_ui, idx)
 
-            # Chemin du fichier temporaire (.part)
+            # Temp file path (.part)
             temp_path = self._get_temp_path(it)
             it.temp_path = temp_path
 
-            # Reprise : .part existant → resume, fichier final → skip direct
+            # Resume: existing .part → resume, final file already there → skip
             existing_size = 0
             if os.path.exists(temp_path):
                 existing_size = os.path.getsize(temp_path)
@@ -877,7 +877,7 @@ class TurboDownloader(ctk.CTk):
                 with self.req.get(it.url, stream=True, allow_redirects=True,
                                   timeout=60, headers=headers) as r:
 
-                    # Serveur sans support Range → repart de 0
+                    # Server doesn't support Range → restart from 0
                     if existing_size > 0 and r.status_code == 200:
                         it.resume_from = 0
                         existing_size  = 0
@@ -892,14 +892,14 @@ class TurboDownloader(ctk.CTk):
 
                     ct = (r.headers.get("Content-Type") or "").lower()
                     if "text/html" in ct:
-                        # Erreur métier → pas de retry
+                        # Business error → no retry
                         it.state     = "error"
-                        it.error_msg = "HTML reçu (lien expiré / auth ?)"
+                        it.error_msg = "HTML received (expired link / auth required?)"
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         return
 
-                    # Taille depuis les headers du stream
+                    # Size depuis les headers du stream
                     cr = r.headers.get("Content-Range")
                     if cr and "/" in cr:
                         try:
@@ -911,14 +911,14 @@ class TurboDownloader(ctk.CTk):
                         if cl and cl.isdigit():
                             it.total_size = int(cl) + existing_size
 
-                    # Fichier déjà complet → skip
+                    # File déjà complet → skip
                     if it.total_size and existing_size >= it.total_size:
                         it.state = "skipped"
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         return
 
-                    # Vérification préventive espace disque
+                    # Proactive disk space check
                     if it.total_size:
                         temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
                         try:
@@ -926,9 +926,9 @@ class TurboDownloader(ctk.CTk):
                             needed = it.total_size - existing_size
                             if free < needed:
                                 it.state     = "error"
-                                it.error_msg = (f"Disque temp plein "
-                                                f"({self._fmt_size(free)} libre, "
-                                                f"{self._fmt_size(needed)} requis)")
+                                it.error_msg = (f"Temp disk full "
+                                                f"({self._fmt_size(free)} free, "
+                                                f"{self._fmt_size(needed)} required)")
                                 self.ui(self._update_row_ui, idx)
                                 self.ui(self._refresh_filter_counts)
                                 return
@@ -948,7 +948,7 @@ class TurboDownloader(ctk.CTk):
                         and it.total_size is not None
                         and it.total_size > 0
                         and supports_ranges
-                        and existing_size == 0   # pas de reprise partielle en multipart
+                        and existing_size == 0   # no partial resume in multipart mode
                     )
                     if can_multipart:
                         r.close()
@@ -991,7 +991,7 @@ class TurboDownloader(ctk.CTk):
                     except OSError as e:
                         if "No space left" in str(e) or e.errno == 28:
                             it.state     = "error"
-                            it.error_msg = "Disque temp plein pendant le téléchargement"
+                            it.error_msg = "Temp disk full during download"
                         else:
                             it.state     = "error"
                             it.error_msg = str(e)
@@ -999,7 +999,7 @@ class TurboDownloader(ctk.CTk):
                         self.ui(self._refresh_filter_counts)
                         return
 
-                    # Fichier .part fermé proprement
+                    # File .part fermé proprement
                     if _canceled:
                         it.state = "canceled"
                         self.ui(self._update_row_ui, idx)
@@ -1011,7 +1011,7 @@ class TurboDownloader(ctk.CTk):
                             pass
                         return
 
-                    # DL terminé → déplacer vers la destination finale
+                    # Download complete → move to final destination
                     it.state = "moving"
                     self.ui(self._update_row_ui, idx)
                     self.ui(self._refresh_filter_counts)
@@ -1021,7 +1021,7 @@ class TurboDownloader(ctk.CTk):
                         shutil.move(temp_path, it.dest_path)
                     except OSError as e:
                         it.state     = "error"
-                        it.error_msg = f"Erreur déplacement : {e}"
+                        it.error_msg = f"Move error: {e}"
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         return
@@ -1043,25 +1043,25 @@ class TurboDownloader(ctk.CTk):
                     return  # ← succès, on sort de la boucle retry
 
             except Exception as e:
-                # Erreur retryable (réseau) ?
+                # Retryable error (network)?
                 if self._is_retryable(e) and it.retry_count < retry_max:
                     it.retry_count += 1
-                    delay = retry_delay * (2 ** (it.retry_count - 1))  # délai exponentiel
+                    delay = retry_delay * (2 ** (it.retry_count - 1))  # exponential backoff
                     it.state     = "downloading"
-                    it.error_msg = (f"Erreur réseau, nouvelle tentative "
-                                    f"{it.retry_count}/{retry_max} dans {delay}s…")
+                    it.error_msg = (f"Network error, retrying "
+                                    f"{it.retry_count}/{retry_max} in {delay}s…")
                     self.ui(self._update_row_ui, idx)
 
-                    # Attendre le délai en vérifiant cancel toutes les secondes
+                    # Wait the delay, checking for cancel every second
                     for _ in range(delay):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
                             break
                         time.sleep(1)
                     continue  # → prochain tour de boucle
 
-                # Erreur définitive ou retries épuisés
+                # Fatal error or retries exhausted
                 if it.retry_count >= retry_max and retry_max > 0:
-                    it.error_msg = f"Échec après {it.retry_count} tentative(s) : {e}"
+                    it.error_msg = f"Failed after {it.retry_count} attempt(s): {e}"
                 else:
                     it.error_msg = str(e)
                 it.state = "error"
@@ -1071,12 +1071,12 @@ class TurboDownloader(ctk.CTk):
 
     # ----------------------------------------------------------------- Orchestration START / STOP
 
-    SCAN_TIMEOUT = 60  # secondes avant d'interrompre le crawl
+    SCAN_TIMEOUT = 60  # seconds before interrupting the crawl
 
     def start_downloads(self):
         if not self.download_path:
             self.folder_label.configure(
-                text="Choisis d'abord un dossier de destination", text_color="orange")
+                text="Please choose a destination folder first", text_color="orange")
             return
 
         urls = self._get_urls()
@@ -1095,8 +1095,8 @@ class TurboDownloader(ctk.CTk):
         self._scan_cancel_event.clear()
         keep_tree = self.keep_tree_var.get()
 
-        # Traiter chaque URL séquentiellement dans un thread dédié
-        self.start_btn.configure(state="disabled", text="Scan…")
+        # Traiter chaque URL séquentiellement in un thread dédié
+        self.start_btn.configure(state="disabled", text="Scanning…")
 
         def process_all_urls():
             for url in urls:
@@ -1108,22 +1108,22 @@ class TurboDownloader(ctk.CTk):
         threading.Thread(target=process_all_urls, daemon=True).start()
 
     def _process_one_url(self, url: str, workers: int, keep_tree: bool):
-        """Traite une seule URL : fichier direct ou crawl + popup."""
-        # Normaliser l'URL
+        """Processes a single URL: direct file or crawl + popup."""
+        # Normalize the URL
         if not url.split("?")[0].lower().endswith(self._active_extensions) and not url.endswith("/"):
             url = url + "/"
 
-        # ── Cas 1 : URL directe vers un fichier ────────────────────────────
+        # ── Case 1: direct file URL ──────────────────────────────────────
         if url.split("?")[0].lower().endswith(self._active_extensions):
             name = unquote(os.path.basename(url.split("?")[0]) or "file.bin")
             self._launch_downloads([(url, "")], workers, keep_tree)
             self.ui(lambda n=name: self.folder_label.configure(
-                text=f"Téléchargement direct : {n}", text_color="white"))
+                text=f"Direct download: {n}", text_color="white"))
             return
 
-        # ── Cas 2 : URL de répertoire → crawl ──────────────────────────────
+        # ── Case 2: directory URL → crawl ───────────────────────────────
         self.ui(lambda u=url: self.folder_label.configure(
-            text=f"Scan : {u[:60]}…", text_color="gray"))
+            text=f"Scanning: {u[:60]}…", text_color="gray"))
 
         self._scan_cancel_event.clear()
         timer = threading.Timer(self.SCAN_TIMEOUT, self._scan_cancel_event.set)
@@ -1138,16 +1138,16 @@ class TurboDownloader(ctk.CTk):
             return
 
         if not files:
-            msg = ("Scan interrompu (timeout 60s) — aucun fichier trouvé"
-                   if timed_out else f"Aucun fichier trouvé : {url[:50]}")
+            msg = ("Scan interrupted (60s timeout) — no files found"
+                   if timed_out else f"No files found: {url[:50]}")
             self.ui(lambda m=msg: self.folder_label.configure(text=m, text_color="orange"))
             return
 
-        warning = (" ⚠ Scan interrompu après 60s — liste possiblement incomplète"
+        warning = (" ⚠ Scan interrupted after 60s — list may be incomplete"
                    if timed_out else "")
 
-        # open_popup doit s'exécuter sur le thread UI et bloquer jusqu'à confirmation
-        # On utilise un Event pour synchroniser
+        # open_popup must run on the UI thread and block until confirmed
+        # Use an Event to synchronize
         popup_done = threading.Event()
 
         def open_popup():
@@ -1161,11 +1161,11 @@ class TurboDownloader(ctk.CTk):
                 self.folder_label.configure(text=warning, text_color="orange")
 
         self.ui(open_popup)
-        # Attendre que l'utilisateur confirme (ou ferme) la popup avant de passer à l'URL suivante
+        # Wait for the user to confirm (or close) the popup before processing the next URL
         popup_done.wait()
 
     def _launch_downloads(self, files: list, workers: int, keep_tree: bool):
-        """Lance les téléchargements sur la sélection issue de la popup."""
+        """Launches downloads for the selection from the file tree popup."""
         self.stop_all_event.clear()
 
         def init_ui():
@@ -1176,7 +1176,7 @@ class TurboDownloader(ctk.CTk):
                 dest_dir = os.path.join(base, rel_dir) if keep_tree and rel_dir else base
                 dest = os.path.join(dest_dir, name)
 
-                # Réutiliser une ligne existante si même fichier déjà annulé/erreur
+                # Reuse an existing row if the same file was previously canceled/errored
                 existing_idx = next(
                     (i for i, it in self.items.items()
                      if it.dest_path == dest
@@ -1217,10 +1217,10 @@ class TurboDownloader(ctk.CTk):
             new_indices = self.ui_call(init_ui)
             self.executor = ThreadPoolExecutor(max_workers=workers)
 
-            # Compteurs atomiques pour la notification de fin de batch
+            # Atomic counters for batch completion notification
             batch_set    = set(new_indices)
             _lock        = threading.Lock()
-            _remaining   = [len(batch_set)]   # liste mutable pour closure
+            _remaining   = [len(batch_set)]   # mutable list for closure
 
             def _on_future_done(f):
                 f.exception()  # log l'exception si présente
@@ -1228,10 +1228,10 @@ class TurboDownloader(ctk.CTk):
                     _remaining[0] -= 1
                     if _remaining[0] > 0:
                         return
-                # Tous les workers du batch sont terminés
+                # All les workers du batch sont terminés
                 if not self._settings.get("notifications", True):
                     return
-                # Appel dans un thread séparé : notify_batch_done peut bloquer (appel système)
+                # Appel in un thread séparé : notify_batch_done peut bloquer (appel système)
                 def _notify_thread():
                     done     = sum(1 for i in batch_set
                                    if i in self.items and self.items[i].state == "done")
@@ -1251,7 +1251,7 @@ class TurboDownloader(ctk.CTk):
 
     def stop_all(self):
         self.stop_all_event.set()
-        self._scan_cancel_event.set()   # interrompt aussi un crawl en cours
+        self._scan_cancel_event.set()   # also interrupts an ongoing crawl
         for it in self.items.values():
             if it.state in ("waiting", "downloading"):
                 it.cancel_event.set()
@@ -1267,7 +1267,7 @@ class TurboDownloader(ctk.CTk):
                 if it.state in ("waiting", "downloading", "moving"):
                     it.state = "canceled"
                     self._update_row_ui(idx)
-                    # Supprimer le .part principal
+                    # Remove the main .part file
                     for path in [it.temp_path, it.dest_path]:
                         if path:
                             try:
@@ -1275,7 +1275,7 @@ class TurboDownloader(ctk.CTk):
                                     os.remove(path)
                             except OSError:
                                 pass
-                    # Supprimer les .part.N multipart
+                    # Remove multipart .part.N files
                     for seg in it.segments:
                         try:
                             if seg.temp_path and os.path.exists(seg.temp_path):

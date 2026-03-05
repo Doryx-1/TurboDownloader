@@ -6,11 +6,11 @@ import customtkinter as ctk
 from tkinter import filedialog
 
 
-# Chemin du fichier de config : C:/Users/<user>/.turbodownloader/settings.json
+# Config file path: C:/Users/<user>/.turbodownloader/settings.json
 CONFIG_DIR  = pathlib.Path.home() / ".turbodownloader"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 
-# Dossier temp par défaut
+# Default temp folder
 DEFAULT_TEMP_DIR = str(CONFIG_DIR / "tmp")
 
 
@@ -27,7 +27,7 @@ DEFAULT_EXTENSIONS = {
 
 
 def load_settings() -> dict:
-    """Charge les paramètres depuis le fichier de config. Retourne les défauts si absent."""
+    """Loads settings from the config file. Returns defaults if not found."""
     defaults = {
         "temp_dir":      DEFAULT_TEMP_DIR,
         "retry_max":     3,
@@ -42,31 +42,31 @@ def load_settings() -> dict:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 defaults.update(data)
-            print(f"[settings] chargé: throttle={defaults.get('throttle')}, retry={defaults.get('retry_max')}")
+            print(f"[settings] loaded: throttle={defaults.get('throttle')}, retry={defaults.get('retry_max')}")
         except Exception as e:
-            print(f"[settings] erreur lecture: {e}")
+            print(f"[settings] read error: {e}")
     else:
-        print(f"[settings] fichier absent, défauts utilisés")
+        print("[settings] config file not found, using defaults")
     return defaults
 
 
 def save_settings(settings: dict):
-    """Sauvegarde les paramètres sur disque."""
+    """Saves settings to disk."""
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
-        print(f"[settings] sauvegardé: {settings}")
+        print(f"[settings] saved: {settings}")
     except Exception as e:
-        print(f"[settings] erreur sauvegarde: {e}")
+        print(f"[settings] save error: {e}")
 
 
 class SettingsPopup(ctk.CTkToplevel):
-    """Fenêtre de paramètres de TurboDownloader."""
+    """TurboDownloader settings window."""
 
     def __init__(self, master, settings: dict, on_save):
         super().__init__(master)
-        self.title("Paramètres")
+        self.title("Settings")
         self.geometry("620x840")
         self.resizable(False, False)
         self.grab_set()
@@ -77,30 +77,30 @@ class SettingsPopup(ctk.CTkToplevel):
         self._build_ui()
 
     def _build_ui(self):
-        # ── Conteneur principal scrollable ─────────────────────────────────
-        # Layout : titre + sections dans un frame central, boutons fixes en bas
-        # On utilise grid sur self pour séparer proprement contenu / boutons
+        # ── Scrollable main container ───────────────────────────────────
+        # Layout : titre + sections in un frame central, boutons fixes en bas
+        # grid on self cleanly separates content / buttons
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
         self.grid_columnconfigure(0, weight=1)
 
-        # Zone de contenu (haut) — scrollable pour petits écrans
+        # Content area (top) — scrollable for small screens
         content = ctk.CTkScrollableFrame(self, fg_color="transparent")
         content.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
 
-        # Zone boutons (bas) — fixe
+        # Button area (bottom) — fixed
         bot = ctk.CTkFrame(self, fg_color="#2b2b2b")
         bot.grid(row=1, column=0, sticky="ew", padx=0, pady=0)
 
-        # ── Titre ──────────────────────────────────────────────────────────
-        ctk.CTkLabel(content, text="Paramètres",
+        # ── Title ───────────────────────────────────────────────────────
+        ctk.CTkLabel(content, text="Settings",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(
                          anchor="w", padx=20, pady=(16, 12))
 
-        # ── Section : Dossier temporaire ───────────────────────────────────
-        self._section(content, "Dossier temporaire de téléchargement",
-                      "Fichiers écrits ici pendant le DL, puis déplacés à destination.")
+        # ── Section: Temp folder ────────────────────────────────────────
+        self._section(content, "Temporary download folder",
+                      "Files written here during download, then moved to destination.")
 
         row_temp = ctk.CTkFrame(content, fg_color="transparent")
         row_temp.pack(fill="x", padx=20, pady=(0, 4))
@@ -109,68 +109,68 @@ class SettingsPopup(ctk.CTkToplevel):
         self._temp_entry.insert(0, self._settings.get("temp_dir", DEFAULT_TEMP_DIR))
         self._temp_entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
 
-        ctk.CTkButton(row_temp, text="Parcourir…", width=100,
+        ctk.CTkButton(row_temp, text="Browse…", width=100,
                       command=self._browse_temp).pack(side="left")
 
-        ctk.CTkButton(content, text="Réinitialiser par défaut", width=180,
+        ctk.CTkButton(content, text="Reset to default", width=180,
                       fg_color="transparent", border_width=1,
                       command=self._reset_default).pack(anchor="w", padx=20, pady=(2, 8))
 
-        # ── Séparateur ─────────────────────────────────────────────────────
+        # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
-        # ── Section : Retry ────────────────────────────────────────────────
-        self._section(content, "Retry automatique",
-                      "En cas d'erreur réseau, relance automatiquement. Délai double à chaque essai.")
+        # ── Section: Retry ──────────────────────────────────────────────
+        self._section(content, "Automatic retry",
+                      "Automatically retries on network errors. Delay doubles each attempt.")
 
         row_retry = ctk.CTkFrame(content, fg_color="transparent")
         row_retry.pack(fill="x", padx=20, pady=(0, 8))
 
-        ctk.CTkLabel(row_retry, text="Tentatives max :").pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_retry, text="Max attempts:").pack(side="left", padx=(0, 6))
         self._retry_max_entry = ctk.CTkEntry(row_retry, width=60)
         self._retry_max_entry.insert(0, str(self._settings.get("retry_max", 3)))
         self._retry_max_entry.pack(side="left", padx=(0, 20))
 
-        ctk.CTkLabel(row_retry, text="Délai initial (s) :").pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_retry, text="Initial delay (s):").pack(side="left", padx=(0, 6))
         self._retry_delay_entry = ctk.CTkEntry(row_retry, width=60)
         self._retry_delay_entry.insert(0, str(self._settings.get("retry_delay", 5)))
         self._retry_delay_entry.pack(side="left")
 
-        # ── Séparateur ─────────────────────────────────────────────────────
+        # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
-        # ── Section : Throttle ─────────────────────────────────────────────
-        self._section(content, "Limitation de bande passante",
-                      "Limite globale répartie entre tous les workers. 0 = illimité.")
+        # ── Section: Throttle ───────────────────────────────────────────
+        self._section(content, "Bandwidth limit",
+                      "Global limit shared across all workers. 0 = unlimited.")
 
         row_throttle = ctk.CTkFrame(content, fg_color="transparent")
         row_throttle.pack(fill="x", padx=20, pady=(0, 8))
 
-        ctk.CTkLabel(row_throttle, text="Limite (MB/s) :").pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_throttle, text="Limit (MB/s):").pack(side="left", padx=(0, 6))
         self._throttle_entry = ctk.CTkEntry(row_throttle, width=80)
         self._throttle_entry.insert(0, str(self._settings.get("throttle", 0)))
         self._throttle_entry.pack(side="left", padx=(0, 10))
-        ctk.CTkLabel(row_throttle, text="0 = illimité",
+        ctk.CTkLabel(row_throttle, text="0 = unlimited",
                      text_color="gray").pack(side="left")
 
-        # ── Séparateur ─────────────────────────────────────────────────────
+        # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
-        # ── Section : Notifications ────────────────────────────────────────
-        self._section(content, "Notifications bureau",
-                      "Alerte quand tous les téléchargements d'un batch sont terminés.")
+        # ── Section: Notifications ──────────────────────────────────────
+        self._section(content, "Desktop notifications",
+                      "Alert when all downloads in a batch are complete.")
 
         row_notif = ctk.CTkFrame(content, fg_color="transparent")
         row_notif.pack(fill="x", padx=20, pady=(0, 8))
         self._notif_var = ctk.BooleanVar(value=self._settings.get("notifications", True))
-        ctk.CTkCheckBox(row_notif, text="Activer les notifications (requiert plyer)",
+        ctk.CTkCheckBox(row_notif, text="Enable notifications (requires plyer)",
                         variable=self._notif_var).pack(side="left")
 
-        # ── Séparateur ─────────────────────────────────────────────────────
+        # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
-        # ── Section : Multipart ────────────────────────────────────────────
-        self._section(content, "Téléchargement multipart",
+        # ── Section: Multipart ──────────────────────────────────────────
+        self._section(content, "Multipart download",
                       "Divise chaque fichier en N segments parallèles. "
                       "Requiert Accept-Ranges sur le serveur. 1 = désactivé.")
 
@@ -188,12 +188,12 @@ class SettingsPopup(ctk.CTkToplevel):
         self._seg_slider.pack(side="left", fill="x", expand=True)
         self._on_seg_slider(self._seg_slider.get())  # init label
 
-        # ── Séparateur ─────────────────────────────────────────────────────
+        # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
-        # ── Section : Extensions ───────────────────────────────────────────
-        self._section(content, "Extensions téléchargeables",
-                      "Seuls les fichiers avec ces extensions seront détectés lors du crawl.")
+        # ── Section: Extensions ─────────────────────────────────────────
+        self._section(content, "Downloadable extensions",
+                      "Only files with these extensions will be detected during crawl.")
 
         ext_grid = ctk.CTkFrame(content, fg_color="transparent")
         ext_grid.pack(fill="x", padx=20, pady=(0, 4))
@@ -201,7 +201,7 @@ class SettingsPopup(ctk.CTkToplevel):
         saved_exts: dict = self._settings.get("extensions", DEFAULT_EXTENSIONS.copy())
         self._ext_vars: dict[str, ctk.BooleanVar] = {}
 
-        # Checkboxes pour les extensions prédéfinies (2 colonnes)
+        # Checkboxes for predefined extensions (2 columns)
         predefined = list(DEFAULT_EXTENSIONS.keys())
         for i, ext in enumerate(predefined):
             var = ctk.BooleanVar(value=saved_exts.get(ext, DEFAULT_EXTENSIONS[ext]))
@@ -209,29 +209,29 @@ class SettingsPopup(ctk.CTkToplevel):
             cb = ctk.CTkCheckBox(ext_grid, text=ext, variable=var, width=100)
             cb.grid(row=i // 4, column=i % 4, padx=6, pady=2, sticky="w")
 
-        # Ligne pour extensions custom
+        # Row for custom extensions
         row_custom = ctk.CTkFrame(content, fg_color="transparent")
         row_custom.pack(fill="x", padx=20, pady=(4, 0))
-        ctk.CTkLabel(row_custom, text="Ajouter :").pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_custom, text="Add:").pack(side="left", padx=(0, 6))
         self._custom_ext_entry = ctk.CTkEntry(row_custom, width=100,
                                               placeholder_text=".ext")
         self._custom_ext_entry.pack(side="left", padx=(0, 8))
-        ctk.CTkButton(row_custom, text="+ Ajouter", width=90,
+        ctk.CTkButton(row_custom, text="+ Add", width=90,
                       command=self._add_custom_ext).pack(side="left")
 
-        # Frame pour les extensions custom ajoutées (checkboxes dynamiques)
+        # Frame for dynamically added custom extension checkboxes
         self._custom_ext_frame = ctk.CTkFrame(content, fg_color="transparent")
         self._custom_ext_frame.pack(fill="x", padx=20, pady=(2, 8))
 
-        # Charger les extensions custom déjà sauvegardées (non prédéfinies)
+        # Load already saved custom extensions (not in predefined list)
         for ext, enabled in saved_exts.items():
             if ext not in DEFAULT_EXTENSIONS:
                 self._add_custom_ext_row(ext, enabled)
 
-        # ── Boutons bas (dans bot frame) ───────────────────────────────────
-        ctk.CTkButton(bot, text="Annuler", width=110, fg_color="#5a5a5a",
+        # ── Bottom buttons (inside bot frame) ───────────────────────────
+        ctk.CTkButton(bot, text="Cancel", width=110, fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=(8, 16), pady=12)
-        ctk.CTkButton(bot, text="Enregistrer", width=130, fg_color="#1f6aa5",
+        ctk.CTkButton(bot, text="Save", width=130, fg_color="#1f6aa5",
                       command=self._save).pack(side="right", pady=12)
 
     @staticmethod
@@ -246,7 +246,7 @@ class SettingsPopup(ctk.CTkToplevel):
     def _on_seg_slider(self, val):
         n = int(round(val))
         self._seg_val_lbl.configure(
-            text=f"{n}" if n > 1 else "1 (désactivé)"
+            text=f"{n}" if n > 1 else "1 (disabled)"
         )
 
     def _add_custom_ext(self):
@@ -285,7 +285,7 @@ class SettingsPopup(ctk.CTkToplevel):
         self._temp_entry.insert(0, DEFAULT_TEMP_DIR)
 
     def _save(self):
-        print("[settings] _save appelée")
+        print("[settings] _save called")
 
         self._settings["temp_dir"] = self._temp_entry.get().strip() or DEFAULT_TEMP_DIR
 
@@ -313,7 +313,7 @@ class SettingsPopup(ctk.CTkToplevel):
         # Notifications
         self._settings["notifications"] = self._notif_var.get()
 
-        # Segments multipart
+        # Multipart segments
         self._settings["segments"] = int(round(self._seg_slider.get()))
 
         # Extensions

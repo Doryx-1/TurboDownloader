@@ -2,7 +2,7 @@ import customtkinter as ctk
 
 
 class DownloadRow:
-    """Widget représentant une ligne de téléchargement dans la liste principale."""
+    """Widget représentant une ligne de téléchargement in la liste principale."""
 
     def __init__(self, parent, name: str, on_pause, on_cancel, on_remove):
         self.frame = ctk.CTkFrame(parent)
@@ -18,7 +18,7 @@ class DownloadRow:
                                          fg_color="#5a5a5a", command=on_pause)
         self.pause_btn.grid(row=0, column=2, padx=6, pady=(5, 2))
 
-        self.cancel_btn = ctk.CTkButton(self.frame, text="Annuler", width=90,
+        self.cancel_btn = ctk.CTkButton(self.frame, text="Cancel", width=90,
                                         fg_color="#8B0000", command=on_cancel)
         self.cancel_btn.grid(row=0, column=3, padx=6, pady=(5, 2))
 

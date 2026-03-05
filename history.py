@@ -12,7 +12,7 @@ MAX_ENTRIES  = 500   # entrées max conservées (FIFO)
 # ─────────────────────────────────────────────────────────────── Manager
 
 class HistoryManager:
-    """Lecture / écriture thread-safe de l'historique JSON."""
+    """Thread-safe read/write of the JSON history file."""
 
     def __init__(self):
         self._entries: list[dict] = self._load()
@@ -24,7 +24,7 @@ class HistoryManager:
                     data = json.load(f)
                     return data if isinstance(data, list) else []
             except Exception as e:
-                print(f"[history] erreur lecture: {e}")
+                print(f"[history] read error: {e}")
         return []
 
     def _save(self):
@@ -33,7 +33,7 @@ class HistoryManager:
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(self._entries, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"[history] erreur sauvegarde: {e}")
+            print(f"[history] save error: {e}")
 
     def log_entry(self, filename: str, url: str,
                   size_bytes: int, duration_s: float):
@@ -44,7 +44,7 @@ class HistoryManager:
             "duration_s": round(duration_s, 1),
             "date_iso":   datetime.now().isoformat(timespec="seconds"),
         }
-        self._entries.insert(0, entry)          # plus récent en tête
+        self._entries.insert(0, entry)          # most recent first
         if len(self._entries) > MAX_ENTRIES:
             self._entries = self._entries[:MAX_ENTRIES]
         self._save()
@@ -60,16 +60,16 @@ class HistoryManager:
 # ─────────────────────────────────────────────────────────────── Popup
 
 class HistoryPopup(ctk.CTkToplevel):
-    """Fenêtre d'historique des téléchargements."""
+    """Download history window."""
 
     def __init__(self, master, history_manager: HistoryManager,
                  on_redownload):
         """
-        history_manager : instance partagée avec TurboDownloader
-        on_redownload   : callback(url: str) → réinjecte l'URL et lance
+        history_manager : shared instance with TurboDownloader
+        on_redownload   : callback(url: str) → re-injects the URL and starts download
         """
         super().__init__(master)
-        self.title("Historique des téléchargements")
+        self.title("History des téléchargements")
         self.geometry("900x560")
         self.resizable(True, True)
         self.grab_set()
@@ -85,7 +85,7 @@ class HistoryPopup(ctk.CTkToplevel):
         # ── Titre ──────────────────────────────────────────────────────
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=16, pady=(14, 6))
-        ctk.CTkLabel(top, text="Historique des téléchargements",
+        ctk.CTkLabel(top, text="History des téléchargements",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
         self._count_lbl = ctk.CTkLabel(top, text="", text_color="gray")
         self._count_lbl.pack(side="right")
@@ -93,8 +93,8 @@ class HistoryPopup(ctk.CTkToplevel):
         # ── En-têtes colonnes ──────────────────────────────────────────
         hdr = ctk.CTkFrame(self, fg_color="#2b2b2b")
         hdr.pack(fill="x", padx=16, pady=(0, 2))
-        for text, w in [("Fichier", 320), ("Taille", 90),
-                         ("Durée", 80), ("Date", 150), ("", 130)]:
+        for text, w in [("File", 320), ("Size", 90),
+                         ("Duration", 80), ("Date", 150), ("", 130)]:
             ctk.CTkLabel(hdr, text=text, width=w, anchor="w",
                          font=ctk.CTkFont(size=11, weight="bold"),
                          text_color="gray").pack(side="left", padx=6, pady=4)
@@ -108,9 +108,9 @@ class HistoryPopup(ctk.CTkToplevel):
         # ── Bas ────────────────────────────────────────────────────────
         bot = ctk.CTkFrame(self, fg_color="#2b2b2b")
         bot.pack(fill="x", padx=0, pady=0)
-        ctk.CTkButton(bot, text="Fermer", width=110, fg_color="#5a5a5a",
+        ctk.CTkButton(bot, text="Close", width=110, fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=16, pady=10)
-        ctk.CTkButton(bot, text="🗑  Effacer l'historique", width=180,
+        ctk.CTkButton(bot, text="🗑  Clear history", width=180,
                       fg_color="#8B0000", hover_color="#a00000",
                       command=self._clear_history).pack(side="left", padx=16, pady=10)
 
@@ -121,10 +121,10 @@ class HistoryPopup(ctk.CTkToplevel):
             w.destroy()
 
         entries = self._hm.get_entries()
-        self._count_lbl.configure(text=f"{len(entries)} entrée(s)")
+        self._count_lbl.configure(text=f"{len(entries)} entry(ies)")
 
         if not entries:
-            ctk.CTkLabel(self._scroll, text="Aucun téléchargement enregistré.",
+            ctk.CTkLabel(self._scroll, text="No downloads recorded.",
                          text_color="gray").pack(pady=30)
             return
 
@@ -135,18 +135,18 @@ class HistoryPopup(ctk.CTkToplevel):
         row = ctk.CTkFrame(self._scroll, fg_color="transparent")
         row.pack(fill="x", pady=1)
 
-        # Nom (tronqué si trop long)
+        # Name (truncated if too long)
         name = entry.get("filename", "?")
         display_name = name if len(name) <= 42 else name[:39] + "…"
         ctk.CTkLabel(row, text=display_name, width=320, anchor="w",
                      font=ctk.CTkFont(size=12)).pack(side="left", padx=6)
 
-        # Taille
+        # Size
         size_b = entry.get("size_bytes", 0)
         ctk.CTkLabel(row, text=self._fmt_size(size_b), width=90, anchor="w",
                      text_color="gray").pack(side="left", padx=4)
 
-        # Durée
+        # Duration
         dur = entry.get("duration_s", 0)
         ctk.CTkLabel(row, text=self._fmt_duration(dur), width=80, anchor="w",
                      text_color="gray").pack(side="left", padx=4)
@@ -157,16 +157,16 @@ class HistoryPopup(ctk.CTkToplevel):
         ctk.CTkLabel(row, text=date_display, width=150, anchor="w",
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left", padx=4)
 
-        # Bouton Retélécharger
+        # Re-download button
         url = entry.get("url", "")
         ctk.CTkButton(
-            row, text="↺  Retélécharger", width=130,
+            row, text="↺  Re-download", width=130,
             fg_color="#1f6aa5", hover_color="#1a5a8f",
             font=ctk.CTkFont(size=12),
             command=lambda u=url: self._redownload(u),
         ).pack(side="left", padx=8)
 
-        # Séparateur fin
+        # Thin separator
         ctk.CTkFrame(self._scroll, height=1, fg_color="#333333").pack(fill="x")
 
     # ---------------------------------------------------------------- Actions
@@ -179,7 +179,7 @@ class HistoryPopup(ctk.CTkToplevel):
         self._hm.clear()
         self._populate()
 
-    # ---------------------------------------------------------------- Formatage
+    # ---------------------------------------------------------------- Formatting
 
     @staticmethod
     def _fmt_size(b: int) -> str:

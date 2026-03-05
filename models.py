@@ -5,45 +5,45 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 
-# ── Segment multipart ───────────────────────────────────────────────────────
+# ── Multipart segment ───────────────────────────────────────────────────────
 
 @dataclass
 class SegmentInfo:
-    """Décrit un segment d'un téléchargement multipart."""
-    index:      int             # 0-based
-    byte_start: int             # premier octet inclusif
-    byte_end:   int             # dernier octet inclusif
-    temp_path:  str  = ""       # chemin du .part.N
-    downloaded: int  = 0        # octets reçus pour CE segment
-    done:       bool = False    # segment completement téléchargé
-    error:      str  = ""       # message d'erreur si échec
+    """Describes a segment of a multipart download."""
+    index:      int             # 0-based segment index
+    byte_start: int             # first byte (inclusive)
+    byte_end:   int             # last byte (inclusive)
+    temp_path:  str  = ""       # path to the .part.N temp file
+    downloaded: int  = 0        # bytes received for THIS segment
+    done:       bool = False    # segment fully downloaded
+    error:      str  = ""       # error message if failed
 
 
-# ── Item de téléchargement ──────────────────────────────────────────────────
+# ── Download item ───────────────────────────────────────────────────────────
 
 @dataclass
 class DownloadItem:
     url: str
     filename: str
     dest_path: str
-    relative_path: str = ""         # sous-dossier relatif (arbo. originale)
+    relative_path: str = ""         # relative subfolder (original tree structure)
 
     total_size: Optional[int] = None
     downloaded: int = 0
-    resume_from: int = 0            # offset reprise
+    resume_from: int = 0            # resume byte offset
 
     started_at: float = field(default_factory=time.time)
     speed_window: deque = field(default_factory=lambda: deque(maxlen=50))
-    # chaque entrée : (timestamp, bytes_depuis_dernier_sample)
+    # each entry: (timestamp, bytes_since_last_sample)
 
     cancel_event: threading.Event = field(default_factory=threading.Event)
     pause_event:  threading.Event = field(default_factory=threading.Event)
 
     # state: waiting / downloading / paused / moving / done / error / canceled / skipped
     state: str = "waiting"
-    temp_path: str = ""             # chemin du .part en cours (vide si DL direct)
-    retry_count: int = 0            # nombre de tentatives déjà effectuées
+    temp_path: str = ""             # current .part path (empty for direct DL)
+    retry_count: int = 0            # number of attempts already made
     error_msg: str = ""
 
-    # Multipart — vide si téléchargement classique (1 segment)
+    # Multipart segments — empty for standard single-stream download
     segments: List[SegmentInfo] = field(default_factory=list)

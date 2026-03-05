@@ -1,5 +1,5 @@
 """
-notifier.py — Notifications bureau pour TurboDownloader.
+notifier.py — Desktop notifications pour TurboDownloader.
 Utilise plyer (cross-platform). Fallback silencieux si non installé.
 """
 
@@ -11,17 +11,17 @@ except ImportError:
 
 
 APP_NAME = "TurboDownloader"
-# Durée d'affichage de la notification (secondes)
+# Duration d'affichage de la notification (secondes)
 TOAST_TIMEOUT = 6
 
 
 def notify(title: str, message: str) -> bool:
     """
-    Affiche une notification bureau.
-    Retourne True si envoyée, False si plyer absent ou erreur.
+    Displays a desktop notification.
+    Returns True if sent, False if plyer is missing or an error occurred.
     """
     if not _PLYER_OK:
-        print(f"[notifier] plyer non installé — notification ignorée: {title} / {message}")
+        print(f"[notifier] plyer not installed — notification skipped: {title} / {message}")
         return False
     try:
         _plyer_notif.notify(
@@ -32,12 +32,12 @@ def notify(title: str, message: str) -> bool:
         )
         return True
     except Exception as e:
-        print(f"[notifier] erreur notification: {e}")
+        print(f"[notifier] notification error: {e}")
         return False
 
 
 def notify_batch_done(done: int, errors: int, canceled: int) -> bool:
-    """Notification de fin de batch — appelée quand tous les workers sont terminés."""
+    """Batch completion notification — called when all workers are done."""
     parts = []
     if done:
         parts.append(f"{done} terminé{'s' if done > 1 else ''}")
