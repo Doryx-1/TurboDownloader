@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import queue
 import threading
@@ -26,6 +27,12 @@ from taskbar import TaskbarProgress
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
 
 
+def _resource(relative_path: str) -> str:
+    """Get absolute path to resource — works for dev and PyInstaller .exe"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative_path)
+
+
 class TurboDownloader(ctk.CTk):
 
     def __init__(self):
@@ -36,7 +43,10 @@ class TurboDownloader(ctk.CTk):
 
         self.title("TurboDownloader")
         self.geometry("1360x860")
-        self.iconbitmap("icon.ico")
+        try:
+            self.iconbitmap(_resource("icon.ico"))
+        except Exception:
+            pass  # icon not found — non-blocking
 
         # Thread-safe queue for UI updates
         self.uiq: "queue.Queue[tuple]" = queue.Queue()
