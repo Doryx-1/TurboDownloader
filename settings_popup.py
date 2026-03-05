@@ -14,6 +14,18 @@ CONFIG_FILE = CONFIG_DIR / "settings.json"
 DEFAULT_TEMP_DIR = str(CONFIG_DIR / "tmp")
 
 
+DEFAULT_EXTENSIONS = {
+    ".mkv":  True,
+    ".mp4":  True,
+    ".avi":  True,
+    ".mov":  True,
+    ".wmv":  True,
+    ".srt":  False,
+    ".nfo":  False,
+    ".jpg":  False,
+}
+
+
 def load_settings() -> dict:
     """Charge les paramètres depuis le fichier de config. Retourne les défauts si absent."""
     defaults = {
@@ -21,6 +33,7 @@ def load_settings() -> dict:
         "retry_max":   3,
         "retry_delay": 5,
         "throttle":    0,
+        "extensions":  DEFAULT_EXTENSIONS.copy(),
     }
     if CONFIG_FILE.exists():
         try:
@@ -52,7 +65,7 @@ class SettingsPopup(ctk.CTkToplevel):
     def __init__(self, master, settings: dict, on_save):
         super().__init__(master)
         self.title("Paramètres")
-        self.geometry("580x500")
+        self.geometry("620x680")
         self.resizable(False, False)
         self.grab_set()
 
@@ -138,6 +151,46 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(row_throttle, text="0 = illimité",
                      text_color="gray").pack(side="left")
 
+        # ── Séparateur ─────────────────────────────────────────────────────
+        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+
+        # ── Section : Extensions ───────────────────────────────────────────
+        self._section(content, "Extensions téléchargeables",
+                      "Seuls les fichiers avec ces extensions seront détectés lors du crawl.")
+
+        ext_grid = ctk.CTkFrame(content, fg_color="transparent")
+        ext_grid.pack(fill="x", padx=20, pady=(0, 4))
+
+        saved_exts: dict = self._settings.get("extensions", DEFAULT_EXTENSIONS.copy())
+        self._ext_vars: dict[str, ctk.BooleanVar] = {}
+
+        # Checkboxes pour les extensions prédéfinies (2 colonnes)
+        predefined = list(DEFAULT_EXTENSIONS.keys())
+        for i, ext in enumerate(predefined):
+            var = ctk.BooleanVar(value=saved_exts.get(ext, DEFAULT_EXTENSIONS[ext]))
+            self._ext_vars[ext] = var
+            cb = ctk.CTkCheckBox(ext_grid, text=ext, variable=var, width=100)
+            cb.grid(row=i // 4, column=i % 4, padx=6, pady=2, sticky="w")
+
+        # Ligne pour extensions custom
+        row_custom = ctk.CTkFrame(content, fg_color="transparent")
+        row_custom.pack(fill="x", padx=20, pady=(4, 0))
+        ctk.CTkLabel(row_custom, text="Ajouter :").pack(side="left", padx=(0, 6))
+        self._custom_ext_entry = ctk.CTkEntry(row_custom, width=100,
+                                              placeholder_text=".ext")
+        self._custom_ext_entry.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row_custom, text="+ Ajouter", width=90,
+                      command=self._add_custom_ext).pack(side="left")
+
+        # Frame pour les extensions custom ajoutées (checkboxes dynamiques)
+        self._custom_ext_frame = ctk.CTkFrame(content, fg_color="transparent")
+        self._custom_ext_frame.pack(fill="x", padx=20, pady=(2, 8))
+
+        # Charger les extensions custom déjà sauvegardées (non prédéfinies)
+        for ext, enabled in saved_exts.items():
+            if ext not in DEFAULT_EXTENSIONS:
+                self._add_custom_ext_row(ext, enabled)
+
         # ── Boutons bas (dans bot frame) ───────────────────────────────────
         ctk.CTkButton(bot, text="Annuler", width=110, fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=(8, 16), pady=12)
@@ -152,6 +205,31 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(parent, text=subtitle,
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(
                          anchor="w", padx=20, pady=(0, 6))
+
+    def _add_custom_ext(self):
+        raw = self._custom_ext_entry.get().strip().lower()
+        if not raw:
+            return
+        ext = raw if raw.startswith(".") else f".{raw}"
+        if ext in self._ext_vars:
+            return  # déjà présente
+        self._add_custom_ext_row(ext, True)
+        self._custom_ext_entry.delete(0, "end")
+
+    def _add_custom_ext_row(self, ext: str, enabled: bool):
+        var = ctk.BooleanVar(value=enabled)
+        self._ext_vars[ext] = var
+        row = ctk.CTkFrame(self._custom_ext_frame, fg_color="transparent")
+        row.pack(side="left", padx=(0, 4))
+        ctk.CTkCheckBox(row, text=ext, variable=var, width=100).pack(side="left")
+        ctk.CTkButton(row, text="✕", width=28, height=24,
+                      fg_color="#8B0000", hover_color="#a00000",
+                      command=lambda e=ext, r=row: self._remove_custom_ext(e, r),
+                      font=ctk.CTkFont(size=10)).pack(side="left", padx=(2, 0))
+
+    def _remove_custom_ext(self, ext: str, row_frame):
+        self._ext_vars.pop(ext, None)
+        row_frame.destroy()
 
     def _browse_temp(self):
         folder = filedialog.askdirectory(title="Choisir le dossier temporaire")
@@ -188,6 +266,11 @@ class SettingsPopup(ctk.CTkToplevel):
         except ValueError as e:
             print(f"[settings] throttle parse error: {e!r}")
             self._settings["throttle"] = 0.0
+
+        # Extensions
+        self._settings["extensions"] = {
+            ext: var.get() for ext, var in self._ext_vars.items()
+        }
 
         save_settings(self._settings)
         self._on_save()

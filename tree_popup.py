@@ -4,6 +4,26 @@ from urllib.parse import unquote
 import customtkinter as ctk
 
 
+# Extensions → icônes
+_VIDEO_EXTS    = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v"}
+_SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
+_IMAGE_EXTS    = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+_NFO_EXTS      = {".nfo"}
+
+
+def _file_icon(name: str) -> str:
+    ext = os.path.splitext(name)[1].lower()
+    if ext in _VIDEO_EXTS:
+        return "🎬 "
+    if ext in _SUBTITLE_EXTS:
+        return "📄 "
+    if ext in _IMAGE_EXTS:
+        return "🖼 "
+    if ext in _NFO_EXTS:
+        return "📋 "
+    return "📎 "
+
+
 class FileTreeNode:
     """Nœud de l'arbre : peut être un dossier ou un fichier."""
 
@@ -151,7 +171,7 @@ class FileTreePopup(ctk.CTkToplevel):
             spacer = ctk.CTkLabel(row, text="", width=indent_px + 28, height=24)
             spacer.pack(side="left")
 
-        icon = "📁 " if node.is_dir else "🎬 "
+        icon = "📁 " if node.is_dir else _file_icon(node.name)
         cb = ctk.CTkCheckBox(
             row,
             text=f"{icon}{node.name}",

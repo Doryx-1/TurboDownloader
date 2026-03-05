@@ -17,10 +17,9 @@ import shutil
 from models import DownloadItem
 from widgets import DownloadRow
 from tree_popup import FileTreePopup
-from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR
+from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAULT_EXTENSIONS
 
 
-VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov", ".wmv")
 CHUNK_SIZE = 1024 * 512  # 512 KB
 
 
@@ -73,6 +72,12 @@ class TurboDownloader(ctk.CTk):
         self._build_ui()
         self.after(80, self._process_ui_queue)
         self.after(1000, self._tick_global_speed)
+
+    @property
+    def _active_extensions(self) -> tuple:
+        """Retourne les extensions activées dans les settings (tuple pour endswith)."""
+        exts = self._settings.get("extensions", DEFAULT_EXTENSIONS)
+        return tuple(ext for ext, enabled in exts.items() if enabled) or (".mkv", ".mp4")
 
     # ------------------------------------------------------------------ UI
 
@@ -258,7 +263,7 @@ class TurboDownloader(ctk.CTk):
                     continue
             if href.endswith("/"):
                 results.extend(self.get_all_files(full, base_url, cancel_event))
-            elif href.lower().endswith(VIDEO_EXTENSIONS):
+            elif href.lower().endswith(self._active_extensions):
                 rel = full[len(base_url.rstrip("/")):]
                 rel = rel.lstrip("/")
                 rel_dir = os.path.dirname(rel)
@@ -800,11 +805,11 @@ class TurboDownloader(ctk.CTk):
         keep_tree = self.keep_tree_var.get()
 
         # Normaliser l'URL : ajouter / final si c'est un répertoire sans extension
-        if not url.split("?")[0].lower().endswith(VIDEO_EXTENSIONS) and not url.endswith("/"):
+        if not url.split("?")[0].lower().endswith(self._active_extensions) and not url.endswith("/"):
             url = url + "/"
 
         # ── Cas 1 : URL directe vers un fichier vidéo ──────────────────────
-        if url.split("?")[0].lower().endswith(VIDEO_EXTENSIONS):
+        if url.split("?")[0].lower().endswith(self._active_extensions):
             name = unquote(os.path.basename(url.split("?")[0]) or "file.bin")
             self._launch_downloads([(url, "")], workers, keep_tree)
             self.folder_label.configure(
