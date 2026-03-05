@@ -2,10 +2,24 @@ import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 
-# État possible : waiting / downloading / done / error / canceled / skipped
+# ── Segment multipart ───────────────────────────────────────────────────────
+
+@dataclass
+class SegmentInfo:
+    """Décrit un segment d'un téléchargement multipart."""
+    index:      int             # 0-based
+    byte_start: int             # premier octet inclusif
+    byte_end:   int             # dernier octet inclusif
+    temp_path:  str  = ""       # chemin du .part.N
+    downloaded: int  = 0        # octets reçus pour CE segment
+    done:       bool = False    # segment completement téléchargé
+    error:      str  = ""       # message d'erreur si échec
+
+
+# ── Item de téléchargement ──────────────────────────────────────────────────
 
 @dataclass
 class DownloadItem:
@@ -30,3 +44,6 @@ class DownloadItem:
     temp_path: str = ""             # chemin du .part en cours (vide si DL direct)
     retry_count: int = 0            # nombre de tentatives déjà effectuées
     error_msg: str = ""
+
+    # Multipart — vide si téléchargement classique (1 segment)
+    segments: List[SegmentInfo] = field(default_factory=list)

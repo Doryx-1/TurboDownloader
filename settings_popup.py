@@ -34,6 +34,7 @@ def load_settings() -> dict:
         "retry_delay":   5,
         "throttle":      0,
         "notifications": True,
+        "segments":      4,
         "extensions":    DEFAULT_EXTENSIONS.copy(),
     }
     if CONFIG_FILE.exists():
@@ -66,7 +67,7 @@ class SettingsPopup(ctk.CTkToplevel):
     def __init__(self, master, settings: dict, on_save):
         super().__init__(master)
         self.title("Paramètres")
-        self.geometry("620x760")
+        self.geometry("620x840")
         self.resizable(False, False)
         self.grab_set()
 
@@ -168,6 +169,28 @@ class SettingsPopup(ctk.CTkToplevel):
         # ── Séparateur ─────────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
+        # ── Section : Multipart ────────────────────────────────────────────
+        self._section(content, "Téléchargement multipart",
+                      "Divise chaque fichier en N segments parallèles. "
+                      "Requiert Accept-Ranges sur le serveur. 1 = désactivé.")
+
+        row_seg = ctk.CTkFrame(content, fg_color="transparent")
+        row_seg.pack(fill="x", padx=20, pady=(0, 8))
+
+        self._seg_val_lbl = ctk.CTkLabel(row_seg, text="", width=30)
+        self._seg_val_lbl.pack(side="right", padx=(6, 0))
+
+        self._seg_slider = ctk.CTkSlider(
+            row_seg, from_=1, to=16, number_of_steps=15,
+            command=self._on_seg_slider,
+        )
+        self._seg_slider.set(self._settings.get("segments", 4))
+        self._seg_slider.pack(side="left", fill="x", expand=True)
+        self._on_seg_slider(self._seg_slider.get())  # init label
+
+        # ── Séparateur ─────────────────────────────────────────────────────
+        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+
         # ── Section : Extensions ───────────────────────────────────────────
         self._section(content, "Extensions téléchargeables",
                       "Seuls les fichiers avec ces extensions seront détectés lors du crawl.")
@@ -219,6 +242,12 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(parent, text=subtitle,
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(
                          anchor="w", padx=20, pady=(0, 6))
+
+    def _on_seg_slider(self, val):
+        n = int(round(val))
+        self._seg_val_lbl.configure(
+            text=f"{n}" if n > 1 else "1 (désactivé)"
+        )
 
     def _add_custom_ext(self):
         raw = self._custom_ext_entry.get().strip().lower()
@@ -283,6 +312,9 @@ class SettingsPopup(ctk.CTkToplevel):
 
         # Notifications
         self._settings["notifications"] = self._notif_var.get()
+
+        # Segments multipart
+        self._settings["segments"] = int(round(self._seg_slider.get()))
 
         # Extensions
         self._settings["extensions"] = {

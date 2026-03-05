@@ -14,7 +14,7 @@ from tkinter import filedialog
 
 import shutil
 
-from models import DownloadItem
+from models import DownloadItem, SegmentInfo
 from widgets import DownloadRow
 from tree_popup import FileTreePopup
 from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAULT_EXTENSIONS
@@ -639,6 +639,186 @@ class TurboDownloader(ctk.CTk):
         msg  = str(e).lower()
         return any(k in name or k in msg for k in self._RETRYABLE)
 
+    def _download_multipart(self, idx: int, n_seg: int) -> str:
+        """
+        Télécharge it.url en n_seg segments parallèles.
+        Retourne : "done" | "canceled" | "paused" | "error" | "retry"
+        """
+        it = self.items[idx]
+        total = it.total_size          # garanti non-None à cet appel
+        temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
+
+        # ── Calculer les plages de chaque segment ──────────────────────────
+        seg_size = total // n_seg
+        segments: list[SegmentInfo] = []
+        for i in range(n_seg):
+            start = i * seg_size
+            end   = (start + seg_size - 1) if i < n_seg - 1 else (total - 1)
+            tp    = os.path.join(temp_dir, f"{it.filename}.part.{i}")
+            seg   = SegmentInfo(index=i, byte_start=start, byte_end=end, temp_path=tp)
+            # Reprise : si le .part.N existe déjà et est complet, on le marque done
+            if os.path.exists(tp):
+                got = os.path.getsize(tp)
+                expected = end - start + 1
+                if got >= expected:
+                    seg.downloaded = expected
+                    seg.done = True
+                else:
+                    seg.downloaded = got   # reprise partielle du segment
+            segments.append(seg)
+        it.segments = segments
+
+        # Mise à jour du downloaded global depuis les segments déjà présents
+        it.downloaded = sum(s.downloaded for s in segments)
+
+        # ── Lancer les segments non terminés en parallèle ─────────────────
+        pending = [s for s in segments if not s.done]
+        seg_lock = threading.Lock()
+
+        seg_futures = []
+        seg_executor = ThreadPoolExecutor(max_workers=len(pending) if pending else 1)
+        for seg in pending:
+            f = seg_executor.submit(self._download_segment, idx, seg, seg_lock)
+            seg_futures.append(f)
+
+        # ── Attendre la completion (ou annulation) ─────────────────────────
+        seg_executor.shutdown(wait=True)
+
+        # ── Vérifier l'état final ──────────────────────────────────────────
+        if self.stop_all_event.is_set() or it.cancel_event.is_set():
+            it.state = "canceled"
+            self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
+            # Nettoyage des .part.N
+            for seg in segments:
+                try:
+                    if os.path.exists(seg.temp_path):
+                        os.remove(seg.temp_path)
+                except OSError:
+                    pass
+            return "canceled"
+
+        if it.state == "paused":
+            # Les segments ont sauvegardé leur progression, on garde les .part.N
+            return "paused"
+
+        # Vérifier si un segment est en erreur
+        failed = [s for s in segments if s.error]
+        if failed:
+            err = failed[0].error
+            retry_max = int(self._settings.get("retry_max", 3))
+            if self._is_retryable(Exception(err)) and it.retry_count < retry_max:
+                it.retry_count += 1
+                # Nettoyer seulement les segments échoués (les bons sont gardés)
+                for s in failed:
+                    try:
+                        if os.path.exists(s.temp_path):
+                            os.remove(s.temp_path)
+                    except OSError:
+                        pass
+                it.segments = []
+                return "retry"
+            it.state     = "error"
+            it.error_msg = f"Segment {failed[0].index} : {err}"
+            self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
+            return "error"
+
+        # ── Tous les segments OK → assemblage ─────────────────────────────
+        it.state = "moving"
+        self.ui(self._update_row_ui, idx)
+        self.ui(self._refresh_filter_counts)
+
+        assembly_path = os.path.join(temp_dir, it.filename + ".part")
+        try:
+            os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+            with open(assembly_path, "wb") as out:
+                for seg in segments:
+                    with open(seg.temp_path, "rb") as inp:
+                        shutil.copyfileobj(inp, out)
+                    try:
+                        os.remove(seg.temp_path)
+                    except OSError:
+                        pass
+            shutil.move(assembly_path, it.dest_path)
+        except OSError as e:
+            it.state     = "error"
+            it.error_msg = f"Erreur assemblage : {e}"
+            self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
+            return "error"
+
+        it.temp_path = ""
+        it.segments  = []
+        it.state     = "done"
+        duration = time.time() - it.started_at
+        self._history.log_entry(
+            filename=it.filename, url=it.url,
+            size_bytes=total, duration_s=duration,
+        )
+        self.ui(self._update_row_ui, idx)
+        self.ui(self._refresh_filter_counts)
+        return "done"
+
+    def _download_segment(self, idx: int, seg: SegmentInfo,
+                           seg_lock: threading.Lock):
+        """Worker pour un segment. Télécharge seg.byte_start+seg.downloaded → seg.byte_end."""
+        it = self.items[idx]
+
+        # Calculer l'offset réel (reprise du segment)
+        start_actual = seg.byte_start + seg.downloaded
+        if start_actual > seg.byte_end:
+            seg.done = True
+            return
+
+        headers = {"Range": f"bytes={start_actual}-{seg.byte_end}"}
+        write_mode = "ab" if seg.downloaded > 0 else "wb"
+
+        try:
+            with self.req.get(it.url, stream=True, allow_redirects=True,
+                              timeout=60, headers=headers) as r:
+                if r.status_code not in (200, 206):
+                    seg.error = f"HTTP {r.status_code}"
+                    return
+
+                last_ui = 0.0
+                with open(seg.temp_path, write_mode) as f:
+                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                        if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                            return   # canceled — on garde le .part.N pour reprise
+
+                        if it.pause_event.is_set():
+                            it.state = "paused"
+                            self.ui(self._update_row_ui, idx)
+                            self.ui(self._refresh_filter_counts)
+                            return   # paused — on garde le .part.N
+
+                        if not chunk:
+                            continue
+
+                        f.write(chunk)
+                        n = len(chunk)
+                        seg.downloaded += n
+
+                        with seg_lock:
+                            it.downloaded += n
+                            it.speed_window.append((time.time(), n))
+
+                        self._record_bytes(n)
+                        self._throttle_chunk(n)
+
+                        now = time.time()
+                        if now - last_ui >= 0.20:
+                            last_ui = now
+                            self.ui(self._update_row_ui, idx)
+
+            seg.done = True
+
+        except OSError as e:
+            seg.error = str(e)
+        except Exception as e:
+            seg.error = str(e)
+
     def _download_worker(self, idx: int):
         it = self.items[idx]
         retry_max   = int(self._settings.get("retry_max",   3))
@@ -737,6 +917,27 @@ class TurboDownloader(ctk.CTk):
                             pass
 
                     os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+
+                    # ── Décision multipart ─────────────────────────────
+                    n_seg = int(self._settings.get("segments", 4))
+                    supports_ranges = (
+                        r.headers.get("Accept-Ranges", "").lower() == "bytes"
+                        or r.status_code == 206
+                    )
+                    can_multipart = (
+                        n_seg > 1
+                        and it.total_size is not None
+                        and it.total_size > 0
+                        and supports_ranges
+                        and existing_size == 0   # pas de reprise partielle en multipart
+                    )
+                    if can_multipart:
+                        r.close()
+                        result = self._download_multipart(idx, n_seg)
+                        if result in ("done", "canceled", "paused", "error"):
+                            return
+                        continue  # "retry" → prochain tour de boucle
+                    # ──────────────────────────────────────────────────
 
                     write_mode = "ab" if existing_size > 0 else "wb"
                     last_ui    = 0.0
@@ -971,6 +1172,7 @@ class TurboDownloader(ctk.CTk):
                     it.pause_event  = threading.Event()
                     it.temp_path    = ""
                     it.retry_count  = 0
+                    it.segments     = []
                     it.speed_window.clear()
                     self._update_row_ui(existing_idx)
                     new_indices.append(existing_idx)
@@ -1040,8 +1242,7 @@ class TurboDownloader(ctk.CTk):
                 if it.state in ("waiting", "downloading"):
                     it.state = "canceled"
                     self._update_row_ui(idx)
-                    # Supprimer le fichier partiel (le worker est déjà sorti)
-                    # Supprimer le .part temp et le fichier partiel
+                    # Supprimer le .part principal
                     for path in [it.temp_path, it.dest_path]:
                         if path:
                             try:
@@ -1049,4 +1250,11 @@ class TurboDownloader(ctk.CTk):
                                     os.remove(path)
                             except OSError:
                                 pass
+                    # Supprimer les .part.N multipart
+                    for seg in it.segments:
+                        try:
+                            if seg.temp_path and os.path.exists(seg.temp_path):
+                                os.remove(seg.temp_path)
+                        except OSError:
+                            pass
         self.ui(mark)
