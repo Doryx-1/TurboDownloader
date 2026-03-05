@@ -28,4 +28,5 @@ class DownloadItem:
     # state: waiting / downloading / paused / moving / done / error / canceled / skipped
     state: str = "waiting"
     temp_path: str = ""             # chemin du .part en cours (vide si DL direct)
+    retry_count: int = 0            # nombre de tentatives déjà effectuées
     error_msg: str = ""

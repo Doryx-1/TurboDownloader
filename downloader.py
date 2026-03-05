@@ -59,6 +59,11 @@ class TurboDownloader(ctk.CTk):
         self._speed_samples: deque = deque()    # (timestamp, bytes)
         self._global_total_bytes = 0
 
+        # Throttle — compteur partagé entre tous les workers
+        self._throttle_lock = threading.Lock()
+        self._throttle_window_start = time.time()
+        self._throttle_bytes_this_second = 0
+
         # Filtre actif dans la liste de droite
         self._active_filter = "all"
 
@@ -206,7 +211,8 @@ class TurboDownloader(ctk.CTk):
 
     def _open_settings(self):
         def on_save():
-            self._settings = load_settings()
+            # Mettre à jour le dict existant en place (pas de nouvelle référence)
+            self._settings.update(load_settings())
         SettingsPopup(self, self._settings, on_save)
 
     def choose_folder(self):
@@ -516,178 +522,256 @@ class TurboDownloader(ctk.CTk):
 
     # ----------------------------------------------------------------- Worker de téléchargement
 
+    def _throttle_chunk(self, n: int):
+        """Ralentit le worker si la limite globale de bande passante est atteinte.
+        n = nombre d'octets venant d'être écrits.
+        La limite est répartie entre tous les workers — le sleep se fait
+        HORS du lock pour ne pas bloquer les autres workers pendant l'attente.
+        """
+        limit_bps = self._settings.get("throttle", 0)
+        if not limit_bps or limit_bps <= 0:
+            return  # illimité
+
+        limit_bps_bytes = limit_bps * 1024 * 1024
+        sleep_time = 0.0
+
+        with self._throttle_lock:
+            now = time.time()
+            # Réinitialiser la fenêtre à chaque nouvelle seconde
+            if now - self._throttle_window_start >= 1.0:
+                self._throttle_window_start = now
+                self._throttle_bytes_this_second = 0
+
+            self._throttle_bytes_this_second += n
+
+            if self._throttle_bytes_this_second >= limit_bps_bytes:
+                # Calculer le temps à attendre avant la prochaine fenêtre
+                elapsed = time.time() - self._throttle_window_start
+                sleep_time = max(0.0, 1.0 - elapsed)
+                # Réinitialiser pour la prochaine seconde
+                self._throttle_window_start = time.time() + sleep_time
+                self._throttle_bytes_this_second = 0
+
+        # Sleep HORS du lock — les autres workers continuent pendant ce temps
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
     def _get_temp_path(self, it) -> str:
         """Retourne le chemin du fichier .part dans le dossier temp."""
         temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
         os.makedirs(temp_dir, exist_ok=True)
         return os.path.join(temp_dir, it.filename + ".part")
 
+    # Erreurs réseau qui déclenchent un retry (pas les erreurs "métier")
+    _RETRYABLE = (
+        "timeout", "connectionerror", "chunkedencodingerror",
+        "remotedisconnected", "connectionreset", "connectionaborted",
+    )
+
+    def _is_retryable(self, e: Exception) -> bool:
+        name = type(e).__name__.lower()
+        msg  = str(e).lower()
+        return any(k in name or k in msg for k in self._RETRYABLE)
+
     def _download_worker(self, idx: int):
         it = self.items[idx]
-        it.state = "downloading"
-        it.started_at = time.time()
-        it.error_msg = ""
-        self.ui(self._update_row_ui, idx)
+        retry_max   = int(self._settings.get("retry_max",   3))
+        retry_delay = int(self._settings.get("retry_delay", 5))
 
-        # Chemin du fichier temporaire (.part)
-        temp_path = self._get_temp_path(it)
-        it.temp_path = temp_path
+        while True:
+            # ── Sortie propre si annulé entre deux tentatives ──────────────
+            if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                it.state = "canceled"
+                self.ui(self._update_row_ui, idx)
+                self.ui(self._refresh_filter_counts)
+                return
 
-        # Reprise : chercher d'abord un .part existant, sinon le fichier final
-        existing_size = 0
-        if os.path.exists(temp_path):
-            existing_size = os.path.getsize(temp_path)
-        elif os.path.exists(it.dest_path):
-            # Fichier final déjà là (DL précédent terminé ?) → skip direct
-            existing_size = os.path.getsize(it.dest_path)
+            it.state = "downloading"
+            it.started_at = time.time()
+            it.error_msg  = ""
+            self.ui(self._update_row_ui, idx)
 
-        it.resume_from = existing_size
-        it.downloaded = 0
-        headers = {}
-        if existing_size > 0:
-            headers["Range"] = f"bytes={existing_size}-"
+            # Chemin du fichier temporaire (.part)
+            temp_path = self._get_temp_path(it)
+            it.temp_path = temp_path
 
-        try:
-            with self.req.get(it.url, stream=True, allow_redirects=True,
-                              timeout=60, headers=headers) as r:
+            # Reprise : .part existant → resume, fichier final → skip direct
+            existing_size = 0
+            if os.path.exists(temp_path):
+                existing_size = os.path.getsize(temp_path)
+            elif os.path.exists(it.dest_path):
+                existing_size = os.path.getsize(it.dest_path)
 
-                # Serveur sans support Range → repart de 0
-                if existing_size > 0 and r.status_code == 200:
-                    it.resume_from = 0
-                    existing_size = 0
-                    # Supprimer le .part obsolète
-                    try:
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
-                    except OSError:
-                        pass
+            it.resume_from = existing_size
+            it.downloaded  = 0
+            headers = {}
+            if existing_size > 0:
+                headers["Range"] = f"bytes={existing_size}-"
 
-                if r.status_code not in (200, 206):
-                    r.raise_for_status()
+            try:
+                with self.req.get(it.url, stream=True, allow_redirects=True,
+                                  timeout=60, headers=headers) as r:
 
-                ct = (r.headers.get("Content-Type") or "").lower()
-                if "text/html" in ct:
-                    it.state = "error"
-                    it.error_msg = "HTML reçu (lien expiré / auth ?)"
-                    self.ui(self._update_row_ui, idx)
-                    self.ui(self._refresh_filter_counts)
-                    return
+                    # Serveur sans support Range → repart de 0
+                    if existing_size > 0 and r.status_code == 200:
+                        it.resume_from = 0
+                        existing_size  = 0
+                        try:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        except OSError:
+                            pass
 
-                # Taille depuis les headers du stream
-                cr = r.headers.get("Content-Range")
-                if cr and "/" in cr:
-                    try:
-                        it.total_size = int(cr.split("/")[-1])
-                    except ValueError:
-                        pass
-                if it.total_size is None:
-                    cl = r.headers.get("Content-Length")
-                    if cl and cl.isdigit():
-                        it.total_size = int(cl) + existing_size
+                    if r.status_code not in (200, 206):
+                        r.raise_for_status()
 
-                # Fichier déjà complet → skip
-                if it.total_size and existing_size >= it.total_size:
-                    it.state = "skipped"
-                    self.ui(self._update_row_ui, idx)
-                    self.ui(self._refresh_filter_counts)
-                    return
+                    ct = (r.headers.get("Content-Type") or "").lower()
+                    if "text/html" in ct:
+                        # Erreur métier → pas de retry
+                        it.state     = "error"
+                        it.error_msg = "HTML reçu (lien expiré / auth ?)"
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        return
 
-                # Vérification préventive espace disque sur le temp
-                if it.total_size:
-                    temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
-                    try:
-                        free = shutil.disk_usage(temp_dir).free
-                        needed = it.total_size - existing_size
-                        if free < needed:
-                            it.state = "error"
-                            it.error_msg = (f"Disque temp plein "
-                                            f"({self._fmt_size(free)} libre, "
-                                            f"{self._fmt_size(needed)} requis)")
-                            self.ui(self._update_row_ui, idx)
-                            self.ui(self._refresh_filter_counts)
-                            return
-                    except OSError:
-                        pass  # si disk_usage échoue on continue quand même
+                    # Taille depuis les headers du stream
+                    cr = r.headers.get("Content-Range")
+                    if cr and "/" in cr:
+                        try:
+                            it.total_size = int(cr.split("/")[-1])
+                        except ValueError:
+                            pass
+                    if it.total_size is None:
+                        cl = r.headers.get("Content-Length")
+                        if cl and cl.isdigit():
+                            it.total_size = int(cl) + existing_size
 
-                os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+                    # Fichier déjà complet → skip
+                    if it.total_size and existing_size >= it.total_size:
+                        it.state = "skipped"
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        return
 
-                write_mode = "ab" if existing_size > 0 else "wb"
-                last_ui = 0.0
-                _canceled = False
-
-                try:
-                    with open(temp_path, write_mode) as f:
-                        for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                            if self.stop_all_event.is_set() or it.cancel_event.is_set():
-                                _canceled = True
-                                break
-                            if it.pause_event.is_set():
-                                it.state = "paused"
+                    # Vérification préventive espace disque
+                    if it.total_size:
+                        temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
+                        try:
+                            free   = shutil.disk_usage(temp_dir).free
+                            needed = it.total_size - existing_size
+                            if free < needed:
+                                it.state     = "error"
+                                it.error_msg = (f"Disque temp plein "
+                                                f"({self._fmt_size(free)} libre, "
+                                                f"{self._fmt_size(needed)} requis)")
                                 self.ui(self._update_row_ui, idx)
                                 self.ui(self._refresh_filter_counts)
                                 return
-                            if not chunk:
-                                continue
+                        except OSError:
+                            pass
 
-                            f.write(chunk)
-                            n = len(chunk)
-                            it.downloaded += n
-                            it.speed_window.append((time.time(), n))
-                            self._record_bytes(n)
-
-                            now = time.time()
-                            if now - last_ui >= 0.20:
-                                last_ui = now
-                                self.ui(self._update_row_ui, idx)
-
-                except OSError as e:
-                    if "No space left" in str(e) or e.errno == 28:
-                        it.state = "error"
-                        it.error_msg = "Disque temp plein pendant le téléchargement"
-                    else:
-                        it.state = "error"
-                        it.error_msg = str(e)
-                    self.ui(self._update_row_ui, idx)
-                    self.ui(self._refresh_filter_counts)
-                    return
-
-                # Fichier .part fermé proprement
-                if _canceled:
-                    it.state = "canceled"
-                    self.ui(self._update_row_ui, idx)
-                    self.ui(self._refresh_filter_counts)
-                    try:
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
-                    except OSError:
-                        pass
-                    return
-
-                # DL terminé → déplacer vers la destination finale
-                it.state = "moving"
-                self.ui(self._update_row_ui, idx)
-                self.ui(self._refresh_filter_counts)
-
-                try:
                     os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
-                    shutil.move(temp_path, it.dest_path)
-                except OSError as e:
-                    it.state = "error"
-                    it.error_msg = f"Erreur déplacement : {e}"
+
+                    write_mode = "ab" if existing_size > 0 else "wb"
+                    last_ui    = 0.0
+                    _canceled  = False
+
+                    try:
+                        with open(temp_path, write_mode) as f:
+                            for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                                if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                                    _canceled = True
+                                    break
+                                if it.pause_event.is_set():
+                                    it.state = "paused"
+                                    self.ui(self._update_row_ui, idx)
+                                    self.ui(self._refresh_filter_counts)
+                                    return
+                                if not chunk:
+                                    continue
+
+                                f.write(chunk)
+                                n = len(chunk)
+                                it.downloaded += n
+                                it.speed_window.append((time.time(), n))
+                                self._record_bytes(n)
+                                self._throttle_chunk(n)
+
+                                now = time.time()
+                                if now - last_ui >= 0.20:
+                                    last_ui = now
+                                    self.ui(self._update_row_ui, idx)
+
+                    except OSError as e:
+                        if "No space left" in str(e) or e.errno == 28:
+                            it.state     = "error"
+                            it.error_msg = "Disque temp plein pendant le téléchargement"
+                        else:
+                            it.state     = "error"
+                            it.error_msg = str(e)
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        return
+
+                    # Fichier .part fermé proprement
+                    if _canceled:
+                        it.state = "canceled"
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        try:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        except OSError:
+                            pass
+                        return
+
+                    # DL terminé → déplacer vers la destination finale
+                    it.state = "moving"
                     self.ui(self._update_row_ui, idx)
                     self.ui(self._refresh_filter_counts)
-                    return
 
-                it.temp_path = ""
-                it.state = "done"
+                    try:
+                        os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+                        shutil.move(temp_path, it.dest_path)
+                    except OSError as e:
+                        it.state     = "error"
+                        it.error_msg = f"Erreur déplacement : {e}"
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        return
+
+                    it.temp_path = ""
+                    it.state     = "done"
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
+                    return  # ← succès, on sort de la boucle retry
+
+            except Exception as e:
+                # Erreur retryable (réseau) ?
+                if self._is_retryable(e) and it.retry_count < retry_max:
+                    it.retry_count += 1
+                    delay = retry_delay * (2 ** (it.retry_count - 1))  # délai exponentiel
+                    it.state     = "downloading"
+                    it.error_msg = (f"Erreur réseau, nouvelle tentative "
+                                    f"{it.retry_count}/{retry_max} dans {delay}s…")
+                    self.ui(self._update_row_ui, idx)
+
+                    # Attendre le délai en vérifiant cancel toutes les secondes
+                    for _ in range(delay):
+                        if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                            break
+                        time.sleep(1)
+                    continue  # → prochain tour de boucle
+
+                # Erreur définitive ou retries épuisés
+                if it.retry_count >= retry_max and retry_max > 0:
+                    it.error_msg = f"Échec après {it.retry_count} tentative(s) : {e}"
+                else:
+                    it.error_msg = str(e)
+                it.state = "error"
                 self.ui(self._update_row_ui, idx)
                 self.ui(self._refresh_filter_counts)
-
-        except Exception as e:
-            it.state = "error"
-            it.error_msg = str(e)
-            self.ui(self._update_row_ui, idx)
-            self.ui(self._refresh_filter_counts)
+                return
 
     # ----------------------------------------------------------------- Orchestration START / STOP
 
@@ -810,6 +894,7 @@ class TurboDownloader(ctk.CTk):
                     it.cancel_event = threading.Event()
                     it.pause_event  = threading.Event()
                     it.temp_path    = ""
+                    it.retry_count  = 0
                     it.speed_window.clear()
                     self._update_row_ui(existing_idx)
                     new_indices.append(existing_idx)
