@@ -61,6 +61,7 @@ class FileTreePopup(ctk.CTkToplevel):
         self._root_nodes: list[FileTreeNode] = []
         self._all_nodes:  list[FileTreeNode] = []   # ordre DFS complet
         self._all_file_nodes: list[FileTreeNode] = []
+        self._sort_mode: str = "none"   # "none" | "az" | "za" | "dir"
 
         self._build_tree(files)
         self._build_ui()
@@ -113,6 +114,16 @@ class FileTreePopup(ctk.CTkToplevel):
                     dfs(n.children, depth + 1)
         dfs(self._root_nodes, 0)
 
+        # Sauvegarder l'ordre original pour pouvoir le restaurer après un tri
+        self._original_order: dict[int, list] = {}   # id(node) → children dans ordre original
+        def save_order(nodes):
+            self._original_root_order = list(nodes)
+            for n in nodes:
+                if n.is_dir:
+                    self._original_order[id(n)] = list(n.children)
+                    save_order(n.children)
+        save_order(self._root_nodes)
+
     # ---------------------------------------------------------------- UI
 
     def _build_ui(self):
@@ -128,7 +139,25 @@ class FileTreePopup(ctk.CTkToplevel):
         ctk.CTkButton(btn_bar, text="Tout cocher",   width=140,
                       command=self._check_all).pack(side="left", padx=(0, 8))
         ctk.CTkButton(btn_bar, text="Tout décocher", width=140,
-                      command=self._uncheck_all).pack(side="left")
+                      command=self._uncheck_all).pack(side="left", padx=(0, 20))
+
+        # ── Boutons de tri ─────────────────────────────────────────────────
+        ctk.CTkLabel(btn_bar, text="Tri :", text_color="gray").pack(side="left", padx=(0, 4))
+
+        self._sort_btns: dict[str, ctk.CTkButton] = {}
+        sort_defs = [
+            ("az",  "Nom A→Z"),
+            ("za",  "Nom Z→A"),
+            ("dir", "Dossiers d'abord"),
+        ]
+        for key, label in sort_defs:
+            btn = ctk.CTkButton(
+                btn_bar, text=label, width=130,
+                fg_color="transparent", border_width=1,
+                command=lambda k=key: self._apply_sort(k),
+            )
+            btn.pack(side="left", padx=3)
+            self._sort_btns[key] = btn
 
         self._scroll = ctk.CTkScrollableFrame(self)
         self._scroll.pack(fill="both", expand=True, padx=10, pady=(0, 8))
@@ -181,6 +210,73 @@ class FileTreePopup(ctk.CTkToplevel):
         )
         cb.pack(side="left", padx=4)
         node._checkbox = cb
+
+    # ---------------------------------------------------------------- Tri
+
+    def _apply_sort(self, mode: str):
+        """Trie l'arbre selon le mode demandé, puis repacke toutes les lignes."""
+        # Toggle : cliquer deux fois sur le même mode remet en "none" (ordre original)
+        if self._sort_mode == mode:
+            mode = "none"
+
+        self._sort_mode = mode
+
+        # Mise à jour visuelle des boutons
+        for k, btn in self._sort_btns.items():
+            btn.configure(fg_color="#1f6aa5" if k == mode else "transparent")
+
+        # Trier récursivement les children de chaque nœud + _root_nodes
+        self._sort_nodes(self._root_nodes, mode)
+
+        # Reconstruire _all_nodes en DFS dans le nouvel ordre
+        self._all_nodes.clear()
+        def dfs(nodes):
+            for n in nodes:
+                self._all_nodes.append(n)
+                if n.is_dir:
+                    dfs(n.children)
+        dfs(self._root_nodes)
+
+        # Repacker toutes les lignes dans le nouvel ordre DFS
+        # On dépaque tout d'abord, puis on repaque dans l'ordre (en respectant la visibilité)
+        for node in self._all_nodes:
+            node._row_frame.pack_forget()
+
+        for node in self._all_nodes:
+            if self._is_visible(node):
+                node._row_frame.pack(fill="x", pady=0)
+
+    def _sort_nodes(self, nodes: list, mode: str):
+        """Tri récursif en place de la liste de nœuds et de leurs enfants."""
+        if mode == "none":
+            # Restaurer l'ordre original
+            original = getattr(self, "_original_root_order", None)
+            if original is not None and nodes is self._root_nodes:
+                nodes[:] = list(self._original_root_order)
+            else:
+                # Pour les sous-listes, retrouver l'ordre via le parent
+                pass
+            # Restauration complète via la map sauvegardée
+            def restore(node_list):
+                for n in node_list:
+                    if n.is_dir and id(n) in self._original_order:
+                        n.children[:] = list(self._original_order[id(n)])
+                        restore(n.children)
+            if nodes is self._root_nodes:
+                nodes[:] = list(self._original_root_order)
+            restore(nodes)
+            return
+
+        if mode == "az":
+            nodes.sort(key=lambda n: n.name.lower())
+        elif mode == "za":
+            nodes.sort(key=lambda n: n.name.lower(), reverse=True)
+        elif mode == "dir":
+            nodes.sort(key=lambda n: (0 if n.is_dir else 1, n.name.lower()))
+
+        for node in nodes:
+            if node.is_dir and node.children:
+                self._sort_nodes(node.children, mode)
 
     # ---------------------------------------------------------------- Expand / collapse
 
