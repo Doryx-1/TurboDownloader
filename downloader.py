@@ -245,9 +245,20 @@ class TurboDownloader(ctk.CTk):
         return box["v"]
 
     def _get_urls(self) -> list[str]:
-        """Retourne la liste des URLs saisies (une par ligne, vides ignorées)."""
+        """Retourne la liste des URLs saisies.
+        Séparateurs acceptés : saut de ligne OU espace(s).
+        Les entrées vides et les doublons sont ignorés, l'ordre est conservé.
+        """
         raw = self.url_box.get("1.0", "end").strip()
-        urls = [u.strip() for u in raw.splitlines() if u.strip()]
+        tokens = raw.split()   # split() sans arg = tout whitespace (espace, tab, newline)
+        # Garder uniquement ce qui ressemble à une URL (commence par http)
+        seen = set()
+        urls = []
+        for t in tokens:
+            t = t.strip()
+            if t and t.lower().startswith("http") and t not in seen:
+                seen.add(t)
+                urls.append(t)
         return urls
 
     def _open_settings(self):
