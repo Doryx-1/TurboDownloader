@@ -57,6 +57,7 @@ class FileTreePopup(ctk.CTkToplevel):
         self.geometry("760x620")
         self.resizable(True, True)
         self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: self._cancel())
 
         self._on_confirm      = on_confirm
         self._root_nodes: list[FileTreeNode] = []
@@ -189,7 +190,7 @@ class FileTreePopup(ctk.CTkToplevel):
         bot = ctk.CTkFrame(self, fg_color="transparent")
         bot.pack(fill="x", padx=14, pady=(0, 12))
         ctk.CTkButton(bot, text="Annuler", width=120, fg_color="#5a5a5a",
-                      command=self.destroy).pack(side="right", padx=(8, 0))
+                      command=self._cancel).pack(side="right", padx=(8, 0))
         ctk.CTkButton(bot, text="Lancer le téléchargement", fg_color="#1f6aa5",
                       command=self._confirm).pack(side="right")
 
@@ -262,22 +263,17 @@ class FileTreePopup(ctk.CTkToplevel):
     def _sort_nodes(self, nodes: list, mode: str):
         """Tri récursif en place de la liste de nœuds et de leurs enfants."""
         if mode == "none":
-            # Restaurer l'ordre original
-            original = getattr(self, "_original_root_order", None)
-            if original is not None and nodes is self._root_nodes:
-                nodes[:] = list(self._original_root_order)
-            else:
-                # Pour les sous-listes, retrouver l'ordre via le parent
-                pass
-            # Restauration complète via la map sauvegardée
+            # Restaurer l'ordre original depuis la map sauvegardée
+            # Toujours appliquer depuis _root_nodes pour couvrir tous les niveaux
+            self._root_nodes[:] = list(self._original_root_order)
+
             def restore(node_list):
                 for n in node_list:
                     if n.is_dir and id(n) in self._original_order:
                         n.children[:] = list(self._original_order[id(n)])
                         restore(n.children)
-            if nodes is self._root_nodes:
-                nodes[:] = list(self._original_root_order)
-            restore(nodes)
+
+            restore(self._root_nodes)
             return
 
         if mode == "az":
@@ -456,6 +452,11 @@ class FileTreePopup(ctk.CTkToplevel):
         self._count_lbl.configure(text=f"{checked} / {total} fichier(s) sélectionné(s)")
 
     # ---------------------------------------------------------------- Confirmation
+
+    def _cancel(self):
+        """Fermeture sans sélection — appelle on_confirm([]) pour débloquer popup_done."""
+        self.destroy()
+        self._on_confirm([])
 
     def _confirm(self):
         selected = [(n.file_url, n.rel_dir) for n in self._all_file_nodes if n.var.get()]

@@ -85,8 +85,8 @@ class SettingsPopup(ctk.CTkToplevel):
         self.grid_rowconfigure(1, weight=0)
         self.grid_columnconfigure(0, weight=1)
 
-        # Zone de contenu (haut)
-        content = ctk.CTkFrame(self, fg_color="transparent")
+        # Zone de contenu (haut) — scrollable pour petits écrans
+        content = ctk.CTkScrollableFrame(self, fg_color="transparent")
         content.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
 
         # Zone boutons (bas) — fixe

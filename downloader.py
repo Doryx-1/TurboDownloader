@@ -114,9 +114,13 @@ class TurboDownloader(ctk.CTk):
         right.pack(side="right", fill="both", expand=True)
 
         # ---- Panneau gauche ----
-        ctk.CTkLabel(left, text="URL du répertoire").pack(anchor="w", padx=12, pady=(12, 0))
-        self.url_entry = ctk.CTkEntry(left, width=340)
-        self.url_entry.pack(padx=12, pady=6)
+        ctk.CTkLabel(left, text="URL(s) — une par ligne").pack(anchor="w", padx=12, pady=(12, 0))
+        self.url_box = ctk.CTkTextbox(left, width=340, height=90,
+                                      wrap="none", activate_scrollbars=True)
+        self.url_box.pack(padx=12, pady=(4, 2), fill="x")
+        ctk.CTkLabel(left, text="Colle plusieurs URLs, une par ligne.",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
+                         anchor="w", padx=12, pady=(0, 4))
 
         ctk.CTkButton(left, text="Choisir dossier de destination",
                       command=self.choose_folder).pack(padx=12, pady=(4, 2), fill="x")
@@ -240,6 +244,12 @@ class TurboDownloader(ctk.CTk):
             raise box["e"]
         return box["v"]
 
+    def _get_urls(self) -> list[str]:
+        """Retourne la liste des URLs saisies (une par ligne, vides ignorées)."""
+        raw = self.url_box.get("1.0", "end").strip()
+        urls = [u.strip() for u in raw.splitlines() if u.strip()]
+        return urls
+
     def _open_settings(self):
         def on_save():
             # Mettre à jour le dict existant en place (pas de nouvelle référence)
@@ -248,8 +258,8 @@ class TurboDownloader(ctk.CTk):
 
     def _open_history(self):
         def on_redownload(url: str):
-            self.url_entry.delete(0, "end")
-            self.url_entry.insert(0, url)
+            self.url_box.delete("1.0", "end")
+            self.url_box.insert("1.0", url)
             self.start_downloads()
         HistoryPopup(self, self._history, on_redownload)
 
@@ -814,8 +824,6 @@ class TurboDownloader(ctk.CTk):
 
             seg.done = True
 
-        except OSError as e:
-            seg.error = str(e)
         except Exception as e:
             seg.error = str(e)
 
@@ -1060,8 +1068,8 @@ class TurboDownloader(ctk.CTk):
                 text="Choisis d'abord un dossier de destination", text_color="orange")
             return
 
-        url = self.url_entry.get().strip()
-        if not url:
+        urls = self._get_urls()
+        if not urls:
             return
 
         try:
@@ -1076,69 +1084,74 @@ class TurboDownloader(ctk.CTk):
         self._scan_cancel_event.clear()
         keep_tree = self.keep_tree_var.get()
 
-        # Normaliser l'URL : ajouter / final si c'est un répertoire sans extension
+        # Traiter chaque URL séquentiellement dans un thread dédié
+        self.start_btn.configure(state="disabled", text="Scan…")
+
+        def process_all_urls():
+            for url in urls:
+                if self.stop_all_event.is_set():
+                    break
+                self._process_one_url(url, workers, keep_tree)
+            self.ui(lambda: self.start_btn.configure(state="normal", text="START"))
+
+        threading.Thread(target=process_all_urls, daemon=True).start()
+
+    def _process_one_url(self, url: str, workers: int, keep_tree: bool):
+        """Traite une seule URL : fichier direct ou crawl + popup."""
+        # Normaliser l'URL
         if not url.split("?")[0].lower().endswith(self._active_extensions) and not url.endswith("/"):
             url = url + "/"
 
-        # ── Cas 1 : URL directe vers un fichier vidéo ──────────────────────
+        # ── Cas 1 : URL directe vers un fichier ────────────────────────────
         if url.split("?")[0].lower().endswith(self._active_extensions):
             name = unquote(os.path.basename(url.split("?")[0]) or "file.bin")
             self._launch_downloads([(url, "")], workers, keep_tree)
-            self.folder_label.configure(
-                text=f"Téléchargement direct : {name}", text_color="white")
+            self.ui(lambda n=name: self.folder_label.configure(
+                text=f"Téléchargement direct : {n}", text_color="white"))
             return
 
         # ── Cas 2 : URL de répertoire → crawl ──────────────────────────────
-        self.start_btn.configure(state="disabled", text="Scan…")
+        self.ui(lambda u=url: self.folder_label.configure(
+            text=f"Scan : {u[:60]}…", text_color="gray"))
 
-        def crawl_then_popup():
-            # Timer de timeout : set cancel_event après SCAN_TIMEOUT secondes
-            timer = threading.Timer(
-                self.SCAN_TIMEOUT, self._scan_cancel_event.set)
-            timer.daemon = True
-            timer.start()
+        self._scan_cancel_event.clear()
+        timer = threading.Timer(self.SCAN_TIMEOUT, self._scan_cancel_event.set)
+        timer.daemon = True
+        timer.start()
 
-            files = self.get_all_files(url)
-            timed_out = self._scan_cancel_event.is_set()
+        files = self.get_all_files(url)
+        timed_out = self._scan_cancel_event.is_set()
+        timer.cancel()
 
-            timer.cancel()  # annule le timer s'il n'a pas encore déclenché
+        if self.stop_all_event.is_set():
+            return
 
-            def restore_btn():
-                self.start_btn.configure(state="normal", text="START")
+        if not files:
+            msg = ("Scan interrompu (timeout 60s) — aucun fichier trouvé"
+                   if timed_out else f"Aucun fichier trouvé : {url[:50]}")
+            self.ui(lambda m=msg: self.folder_label.configure(text=m, text_color="orange"))
+            return
 
-            # Scan interrompu par STOP (pas de timeout, pas de résultats attendus)
-            if self.stop_all_event.is_set():
-                self.ui(restore_btn)
-                return
+        warning = (" ⚠ Scan interrompu après 60s — liste possiblement incomplète"
+                   if timed_out else "")
 
-            if not files:
-                self.ui(restore_btn)
-                msg = ("Scan interrompu (timeout 60s) — aucun fichier trouvé"
-                       if timed_out else "Aucun fichier vidéo trouvé à cette URL")
-                self.ui(lambda m=msg: self.folder_label.configure(
-                    text=m, text_color="orange"))
-                return
+        # open_popup doit s'exécuter sur le thread UI et bloquer jusqu'à confirmation
+        # On utilise un Event pour synchroniser
+        popup_done = threading.Event()
 
-            def open_popup():
-                restore_btn()
-                warning = (
-                    " ⚠ Scan interrompu après 60s — liste possiblement incomplète"
-                    if timed_out else ""
-                )
-
-                def on_confirm(selected_files):
-                    if not selected_files:
-                        return
+        def open_popup():
+            def on_confirm(selected_files):
+                if selected_files:
                     self._launch_downloads(selected_files, workers, keep_tree)
+                popup_done.set()
 
-                popup = FileTreePopup(self, files, on_confirm)
-                if warning:
-                    # Afficher l'avertissement dans le folder_label (visible derrière la popup)
-                    self.folder_label.configure(text=warning, text_color="orange")
+            FileTreePopup(self, files, on_confirm)
+            if warning:
+                self.folder_label.configure(text=warning, text_color="orange")
 
-            self.ui(open_popup)
-
-        threading.Thread(target=crawl_then_popup, daemon=True).start()
+        self.ui(open_popup)
+        # Attendre que l'utilisateur confirme (ou ferme) la popup avant de passer à l'URL suivante
+        popup_done.wait()
 
     def _launch_downloads(self, files: list, workers: int, keep_tree: bool):
         """Lance les téléchargements sur la sélection issue de la popup."""
@@ -1207,7 +1220,8 @@ class TurboDownloader(ctk.CTk):
                 # Tous les workers du batch sont terminés
                 if not self._settings.get("notifications", True):
                     return
-                def _notify():
+                # Appel dans un thread séparé : notify_batch_done peut bloquer (appel système)
+                def _notify_thread():
                     done     = sum(1 for i in batch_set
                                    if i in self.items and self.items[i].state == "done")
                     errors   = sum(1 for i in batch_set
@@ -1215,7 +1229,7 @@ class TurboDownloader(ctk.CTk):
                     canceled = sum(1 for i in batch_set
                                    if i in self.items and self.items[i].state in ("canceled", "skipped"))
                     notify_batch_done(done, errors, canceled)
-                self.ui(_notify)
+                threading.Thread(target=_notify_thread, daemon=True).start()
 
             for i in new_indices:
                 fut = self.executor.submit(self._download_worker, i)
@@ -1239,7 +1253,7 @@ class TurboDownloader(ctk.CTk):
 
         def mark():
             for idx, it in list(self.items.items()):
-                if it.state in ("waiting", "downloading"):
+                if it.state in ("waiting", "downloading", "moving"):
                     it.state = "canceled"
                     self._update_row_ui(idx)
                     # Supprimer le .part principal
