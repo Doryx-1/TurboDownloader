@@ -29,11 +29,12 @@ DEFAULT_EXTENSIONS = {
 def load_settings() -> dict:
     """Charge les paramètres depuis le fichier de config. Retourne les défauts si absent."""
     defaults = {
-        "temp_dir":    DEFAULT_TEMP_DIR,
-        "retry_max":   3,
-        "retry_delay": 5,
-        "throttle":    0,
-        "extensions":  DEFAULT_EXTENSIONS.copy(),
+        "temp_dir":      DEFAULT_TEMP_DIR,
+        "retry_max":     3,
+        "retry_delay":   5,
+        "throttle":      0,
+        "notifications": True,
+        "extensions":    DEFAULT_EXTENSIONS.copy(),
     }
     if CONFIG_FILE.exists():
         try:
@@ -65,7 +66,7 @@ class SettingsPopup(ctk.CTkToplevel):
     def __init__(self, master, settings: dict, on_save):
         super().__init__(master)
         self.title("Paramètres")
-        self.geometry("620x680")
+        self.geometry("620x760")
         self.resizable(False, False)
         self.grab_set()
 
@@ -150,6 +151,19 @@ class SettingsPopup(ctk.CTkToplevel):
         self._throttle_entry.pack(side="left", padx=(0, 10))
         ctk.CTkLabel(row_throttle, text="0 = illimité",
                      text_color="gray").pack(side="left")
+
+        # ── Séparateur ─────────────────────────────────────────────────────
+        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+
+        # ── Section : Notifications ────────────────────────────────────────
+        self._section(content, "Notifications bureau",
+                      "Alerte quand tous les téléchargements d'un batch sont terminés.")
+
+        row_notif = ctk.CTkFrame(content, fg_color="transparent")
+        row_notif.pack(fill="x", padx=20, pady=(0, 8))
+        self._notif_var = ctk.BooleanVar(value=self._settings.get("notifications", True))
+        ctk.CTkCheckBox(row_notif, text="Activer les notifications (requiert plyer)",
+                        variable=self._notif_var).pack(side="left")
 
         # ── Séparateur ─────────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
@@ -266,6 +280,9 @@ class SettingsPopup(ctk.CTkToplevel):
         except ValueError as e:
             print(f"[settings] throttle parse error: {e!r}")
             self._settings["throttle"] = 0.0
+
+        # Notifications
+        self._settings["notifications"] = self._notif_var.get()
 
         # Extensions
         self._settings["extensions"] = {

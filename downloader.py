@@ -19,6 +19,8 @@ from widgets import DownloadRow
 from tree_popup import FileTreePopup
 from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAULT_EXTENSIONS
 from history import HistoryManager, HistoryPopup
+from notifier import notify_batch_done
+from taskbar import TaskbarProgress
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB
@@ -74,6 +76,12 @@ class TurboDownloader(ctk.CTk):
         self._history = HistoryManager()
 
         self._build_ui()
+
+        # Taskbar Windows — initialisé après _build_ui (besoin du HWND)
+        # On diffère légèrement pour laisser Tk créer la fenêtre
+        self._taskbar: TaskbarProgress = None
+        self.after(500, self._init_taskbar)
+
         self.after(80, self._process_ui_queue)
         self.after(1000, self._tick_global_speed)
 
@@ -82,6 +90,15 @@ class TurboDownloader(ctk.CTk):
         """Retourne les extensions activées dans les settings (tuple pour endswith)."""
         exts = self._settings.get("extensions", DEFAULT_EXTENSIONS)
         return tuple(ext for ext, enabled in exts.items() if enabled) or (".mkv", ".mp4")
+
+    def _init_taskbar(self):
+        """Initialise la barre de progression taskbar (Windows uniquement)."""
+        try:
+            hwnd = self.winfo_id()
+            self._taskbar = TaskbarProgress(hwnd)
+        except Exception as e:
+            print(f"[taskbar] init différée échouée: {e}")
+            self._taskbar = TaskbarProgress(0)  # no-op fallback
 
     # ------------------------------------------------------------------ UI
 
@@ -539,6 +556,34 @@ class TurboDownloader(ctk.CTk):
         speed_text = "–" if speed == 0.0 else self._fmt_speed(speed)
         self.global_speed_label.configure(text=f"Vitesse globale: {speed_text}")
         self.global_dl_label.configure(text=f"Total téléchargé: {self._fmt_size(total)}")
+
+        # ── Mise à jour taskbar ────────────────────────────────────────
+        if self._taskbar:
+            active = [it for it in self.items.values()
+                      if it.state in ("downloading", "moving", "waiting", "paused")]
+            has_error = any(it.state == "error" for it in self.items.values())
+
+            if not active:
+                if has_error:
+                    self._taskbar.set_error()
+                else:
+                    self._taskbar.clear()
+            else:
+                known    = [it for it in active if it.total_size]
+                all_paused = all(it.state == "paused" for it in active)
+                if all_paused:
+                    self._taskbar.set_paused()
+                elif not known:
+                    self._taskbar.set_indeterminate()
+                else:
+                    total_dl  = sum(it.resume_from + it.downloaded for it in known)
+                    total_sz  = sum(it.total_size for it in known)
+                    ratio     = total_dl / total_sz if total_sz else 0.0
+                    if has_error:
+                        self._taskbar.set_error()
+                    else:
+                        self._taskbar.set_progress(ratio)
+
         self.after(1000, self._tick_global_speed)
 
     # ----------------------------------------------------------------- Worker de téléchargement
@@ -945,10 +990,34 @@ class TurboDownloader(ctk.CTk):
             nonlocal new_indices
             new_indices = self.ui_call(init_ui)
             self.executor = ThreadPoolExecutor(max_workers=workers)
+
+            # Compteurs atomiques pour la notification de fin de batch
+            batch_set    = set(new_indices)
+            _lock        = threading.Lock()
+            _remaining   = [len(batch_set)]   # liste mutable pour closure
+
+            def _on_future_done(f):
+                f.exception()  # log l'exception si présente
+                with _lock:
+                    _remaining[0] -= 1
+                    if _remaining[0] > 0:
+                        return
+                # Tous les workers du batch sont terminés
+                if not self._settings.get("notifications", True):
+                    return
+                def _notify():
+                    done     = sum(1 for i in batch_set
+                                   if i in self.items and self.items[i].state == "done")
+                    errors   = sum(1 for i in batch_set
+                                   if i in self.items and self.items[i].state == "error")
+                    canceled = sum(1 for i in batch_set
+                                   if i in self.items and self.items[i].state in ("canceled", "skipped"))
+                    notify_batch_done(done, errors, canceled)
+                self.ui(_notify)
+
             for i in new_indices:
                 fut = self.executor.submit(self._download_worker, i)
-                fut.add_done_callback(
-                    lambda f: f.exception() and print("[WORKER]", f.exception()))
+                fut.add_done_callback(_on_future_done)
 
         new_indices = []
         threading.Thread(target=_run, daemon=True).start()
