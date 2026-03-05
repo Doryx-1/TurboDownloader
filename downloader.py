@@ -18,6 +18,7 @@ from models import DownloadItem
 from widgets import DownloadRow
 from tree_popup import FileTreePopup
 from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAULT_EXTENSIONS
+from history import HistoryManager, HistoryPopup
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB
@@ -68,6 +69,9 @@ class TurboDownloader(ctk.CTk):
 
         # Paramètres (temp dir, etc.)
         self._settings = load_settings()
+
+        # Historique des téléchargements
+        self._history = HistoryManager()
 
         self._build_ui()
         self.after(80, self._process_ui_queue)
@@ -136,10 +140,15 @@ class TurboDownloader(ctk.CTk):
                      font=ctk.CTkFont(size=11), text_color="gray").pack(
                          side="bottom", anchor="sw", padx=12, pady=(0, 6))
 
-        ctk.CTkButton(left, text="Paramètres", width=140,
+        # Ligne boutons bas (Paramètres + Historique côte à côte)
+        bot_btns = ctk.CTkFrame(left, fg_color="transparent")
+        bot_btns.pack(side="bottom", fill="x", padx=12, pady=(4, 2))
+        ctk.CTkButton(bot_btns, text="Paramètres",
                       fg_color="transparent", border_width=1,
-                      command=self._open_settings).pack(
-                          side="bottom", anchor="sw", padx=12, pady=(4, 2))
+                      command=self._open_settings).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(bot_btns, text="Historique",
+                      fg_color="transparent", border_width=1,
+                      command=self._open_history).pack(side="left", expand=True, fill="x", padx=(4, 0))
 
         # ---- Panneau droit ----
         top_bar = ctk.CTkFrame(right, fg_color="transparent")
@@ -219,6 +228,13 @@ class TurboDownloader(ctk.CTk):
             # Mettre à jour le dict existant en place (pas de nouvelle référence)
             self._settings.update(load_settings())
         SettingsPopup(self, self._settings, on_save)
+
+    def _open_history(self):
+        def on_redownload(url: str):
+            self.url_entry.delete(0, "end")
+            self.url_entry.insert(0, url)
+            self.start_downloads()
+        HistoryPopup(self, self._history, on_redownload)
 
     def choose_folder(self):
         folder = filedialog.askdirectory()
@@ -747,6 +763,16 @@ class TurboDownloader(ctk.CTk):
 
                     it.temp_path = ""
                     it.state     = "done"
+                    # ── Log historique ─────────────────────────────────
+                    duration = time.time() - it.started_at
+                    size     = it.total_size or (it.resume_from + it.downloaded)
+                    self._history.log_entry(
+                        filename=it.filename,
+                        url=it.url,
+                        size_bytes=size,
+                        duration_s=duration,
+                    )
+                    # ──────────────────────────────────────────────────
                     self.ui(self._update_row_ui, idx)
                     self.ui(self._refresh_filter_counts)
                     return  # ← succès, on sort de la boucle retry
