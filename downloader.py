@@ -22,6 +22,8 @@ from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAU
 from history import HistoryManager, HistoryPopup
 from notifier import notify_batch_done
 from taskbar import TaskbarProgress
+import ytdlp_worker
+from ytdlp_popup import YtdlpPopup
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
@@ -626,7 +628,7 @@ class TurboDownloader(ctk.CTk):
             "waiting":     "Waiting",
             "downloading": "Downloading",
             "paused":      "Paused",
-            "moving":      "Moving…",
+            "moving":      "Converting…" if getattr(it, "worker_type", "http") == "ytdlp" else "Moving…",
             "done":        "Done",
             "error":       f"Erreur: {it.error_msg[:40]}",
             "canceled":    "Canceled",
@@ -1279,6 +1281,12 @@ class TurboDownloader(ctk.CTk):
                 self.ui(self._refresh_filter_counts)
                 return
 
+    # ----------------------------------------------------------------- yt-dlp worker
+
+    def _ytdlp_worker(self, idx: int):
+        """Delegates to the ytdlp_worker module."""
+        ytdlp_worker.run(idx, self)
+
     # ----------------------------------------------------------------- Orchestration START / STOP
 
     SCAN_TIMEOUT = 60  # seconds before interrupting the crawl
@@ -1331,14 +1339,17 @@ class TurboDownloader(ctk.CTk):
                     if url_type == "directory":
                         url = url.rstrip("/") + "/"
 
-                if url_type == "file":
+                if url_type == "ytdlp":
                     with lock:
-                        all_files.append((url, ""))
+                        all_files.append((url, "", "ytdlp"))
+                elif url_type == "file":
+                    with lock:
+                        all_files.append((url, "", "http"))
                 else:
                     # Crawl du répertoire
                     found = self.get_all_files(url)
                     with lock:
-                        all_files.extend(found)
+                        all_files.extend((u, r, "http") for u, r in found)
 
             # Lancer tous les probes/crawls en parallèle (max 8 threads)
             n = min(len(urls), 8)
@@ -1352,8 +1363,11 @@ class TurboDownloader(ctk.CTk):
                                  self.title("TurboDownloader")))
                 return
 
-            # ── Phase 2 : une seule popup avec tous les fichiers ──────────────
-            if not all_files:
+            # ── Séparer yt-dlp et fichiers HTTP ──────────────────────────────
+            ytdlp_files = [(u, r, "ytdlp") for u, r, t in all_files if t == "ytdlp"]
+            http_files  = [(u, r, "http")  for u, r, t in all_files if t == "http"]
+
+            if not ytdlp_files and not http_files:
                 msg = f"No files found ({len(errors)} error(s))" if errors else "No files found"
                 self.ui(lambda m=msg: (
                     self.title(f"TurboDownloader — {m}"),
@@ -1361,28 +1375,75 @@ class TurboDownloader(ctk.CTk):
                 ))
                 return
 
-            # Dédupliquer (plusieurs URLs peuvent pointer les mêmes fichiers)
+            # Dédupliquer
             seen: set = set()
-            unique_files: list = []
-            for item in all_files:
+            unique_http: list = []
+            for item in http_files:
                 if item[0] not in seen:
                     seen.add(item[0])
-                    unique_files.append(item)
+                    unique_http.append(item)
+
+            unique_ytdlp: list = []
+            for item in ytdlp_files:
+                if item[0] not in seen:
+                    seen.add(item[0])
+                    unique_ytdlp.append(item)
 
             popup_done = threading.Event()
 
             def open_popup():
                 default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
 
-                def on_confirm(selected_files, dest_path: str = "", kt: bool = True):
-                    if selected_files:
-                        effective_dest = dest_path or default_dest
-                        self._launch_downloads(selected_files, workers, kt,
-                                               dest_override=effective_dest)
+                http_confirmed  = []
+                ytdlp_confirmed = []
+
+                # One event per popup — both must be set before launching
+                http_done  = threading.Event()
+                ytdlp_done = threading.Event()
+                if not unique_http:
+                    http_done.set()
+                if not unique_ytdlp:
+                    ytdlp_done.set()
+
+                def _try_launch():
+                    if not http_done.is_set() or not ytdlp_done.is_set():
+                        return
+                    all_confirmed = http_confirmed + ytdlp_confirmed
+                    if all_confirmed:
+                        self._launch_downloads(all_confirmed, workers,
+                                               keep_tree=True,
+                                               dest_override=default_dest)
                     popup_done.set()
 
-                FileTreePopup(self, unique_files, on_confirm,
-                              default_dest=default_dest, keep_tree=keep_tree)
+                def on_http_confirm(selected_files, dest_path="", kt=True):
+                    http_confirmed.extend(
+                        (u, r, "http") for u, r, *_ in selected_files
+                    )
+                    http_done.set()
+                    _try_launch()
+
+                def on_ytdlp_confirm(items: list):
+                    for item in items:
+                        ytdlp_confirmed.append((item["url"], "", "ytdlp",
+                                                item["format_id"],
+                                                item["audio_only"],
+                                                item.get("dest", default_dest)))
+                    ytdlp_done.set()
+                    _try_launch()
+
+                if unique_http:
+                    # FileTreePopup expects (url, rel_dir) tuples — strip the "http" tag
+                    http_pairs = [(u, r) for u, r, *_ in unique_http]
+                    FileTreePopup(self, http_pairs, on_http_confirm,
+                                  default_dest=default_dest, keep_tree=keep_tree)
+                if unique_ytdlp:
+                    ytdlp_urls = [u for u, _, __ in unique_ytdlp]
+                    YtdlpPopup(self, ytdlp_urls, on_ytdlp_confirm,
+                               default_dest=default_dest)
+
+                # Edge case: nothing to show
+                if not unique_http and not unique_ytdlp:
+                    popup_done.set()
 
             self.ui(open_popup)
             popup_done.wait()
@@ -1393,16 +1454,14 @@ class TurboDownloader(ctk.CTk):
         threading.Thread(target=process_all_urls, daemon=True).start()
 
     def _probe_url(self, url: str) -> str:
-        """Probes a URL with a HEAD request to determine its nature.
-        Returns: 'file' | 'directory' | 'unknown'
-        - 'file'      : Content-Type is not text/html (binary, video, etc.)
-        - 'directory' : Content-Type is text/html — likely an index page to crawl
-        - 'unknown'   : request failed (404, timeout, network error)
+        """Probes a URL to determine its nature.
+        Returns: 'file' | 'directory' | 'ytdlp' | 'unknown'
         """
+        if ytdlp_worker.is_ytdlp_url(url):
+            return "ytdlp"
         try:
             r = self.req.head(url, timeout=15, allow_redirects=True)
             if r.status_code == 405:
-                # HEAD not allowed — fall back to GET with stream=True
                 r = self.req.get(url, timeout=15, allow_redirects=True, stream=True)
                 r.close()
             if not r.ok:
@@ -1419,15 +1478,34 @@ class TurboDownloader(ctk.CTk):
 
     def _launch_downloads(self, files: list, workers: int, keep_tree: bool,
                            dest_override: str = ""):
-        """Launches downloads for the selection from the file tree popup."""
+        """Launches downloads for the selection from the file tree popup.
+        Each item in files is (url, rel_dir) or (url, rel_dir, worker_type).
+        worker_type is 'http' (default) or 'ytdlp'.
+        """
         self.stop_all_event.clear()
 
         def init_ui():
             base = dest_override or self.download_path or DEFAULT_DEST_DIR
             new_indices = []
-            for file_url, rel_dir in files:
+            for entry in files:
+                file_url  = entry[0]
+                rel_dir   = entry[1] if len(entry) > 1 else ""
+                wtype     = entry[2] if len(entry) > 2 else "http"
+                format_id = entry[3] if len(entry) > 3 else None
+                audio_only = entry[4] if len(entry) > 4 else False
+                entry_dest = entry[5] if len(entry) > 5 else ""
+
+                # Effective destination: per-item dest (from ytdlp popup) wins
+                effective_base = entry_dest or base
+
                 name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
-                dest_dir = os.path.join(base, rel_dir) if keep_tree and rel_dir else base
+                if wtype == "ytdlp":
+                    from urllib.parse import urlparse
+                    host = urlparse(file_url).netloc.lstrip("www.")
+                    suffix = " [MP3]" if audio_only else ""
+                    name = f"[yt-dlp] {host}{suffix}"
+
+                dest_dir = os.path.join(effective_base, rel_dir) if rel_dir else effective_base
                 dest = os.path.join(dest_dir, name)
 
                 # Reuse an existing row if the same file was previously canceled/errored
@@ -1452,6 +1530,9 @@ class TurboDownloader(ctk.CTk):
                     it.retry_count  = 0
                     it.segments     = []
                     it.speed_window.clear()
+                    it.worker_type   = wtype
+                    it.yt_format_id  = format_id   # type: ignore[attr-defined]
+                    it.yt_audio_only = audio_only  # type: ignore[attr-defined]
                     self._update_row_ui(existing_idx)
                     new_indices.append(existing_idx)
                 else:
@@ -1459,6 +1540,9 @@ class TurboDownloader(ctk.CTk):
                     self._next_idx += 1
                     it = DownloadItem(url=file_url, filename=name,
                                       dest_path=dest, relative_path=rel_dir)
+                    it.worker_type   = wtype        # type: ignore[attr-defined]
+                    it.yt_format_id  = format_id    # type: ignore[attr-defined]
+                    it.yt_audio_only = audio_only   # type: ignore[attr-defined]
                     self.items[idx] = it
                     self._add_row_for_item(idx, it)
                     self._update_row_ui(idx)
@@ -1471,21 +1555,18 @@ class TurboDownloader(ctk.CTk):
             new_indices = self.ui_call(init_ui)
             self.executor = ThreadPoolExecutor(max_workers=workers)
 
-            # Atomic counters for batch completion notification
             batch_set    = set(new_indices)
             _lock        = threading.Lock()
-            _remaining   = [len(batch_set)]   # mutable list for closure
+            _remaining   = [len(batch_set)]
 
             def _on_future_done(f):
-                f.exception()  # log l'exception si présente
+                f.exception()
                 with _lock:
                     _remaining[0] -= 1
                     if _remaining[0] > 0:
                         return
-                # All les workers du batch sont terminés
                 if not self._settings.get("notifications", True):
                     return
-                # Appel in un thread séparé : notify_batch_done peut bloquer (appel système)
                 def _notify_thread():
                     done     = sum(1 for i in batch_set
                                    if i in self.items and self.items[i].state == "done")
@@ -1497,7 +1578,12 @@ class TurboDownloader(ctk.CTk):
                 threading.Thread(target=_notify_thread, daemon=True).start()
 
             for i in new_indices:
-                fut = self.executor.submit(self._download_worker, i)
+                it = self.items[i]
+                wtype = getattr(it, "worker_type", "http")
+                if wtype == "ytdlp":
+                    fut = self.executor.submit(self._ytdlp_worker, i)
+                else:
+                    fut = self.executor.submit(self._download_worker, i)
                 fut.add_done_callback(_on_future_done)
 
         new_indices = []
