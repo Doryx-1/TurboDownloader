@@ -81,6 +81,10 @@ class TurboDownloader(ctk.CTk):
         # Filtre actif in la liste de droite
         self._active_filter = "all"
 
+        # Set of item indices currently being requeued by priority_one
+        # Workers check this to decide between "paused" and "waiting" on exit
+        self._requeue_set: set = set()
+
         # Settings (temp dir, etc.)
         self._settings = load_settings()
 
@@ -448,9 +452,10 @@ class TurboDownloader(ctk.CTk):
     def _add_row_for_item(self, idx: int, item: DownloadItem):
         row = DownloadRow(
             self.scroll, item.filename,
-            on_pause=lambda i=idx:  self.pause_one(i),
-            on_cancel=lambda i=idx: self.cancel_one(i),
-            on_remove=lambda i=idx: self.remove_one(i),
+            on_pause=lambda i=idx:    self.pause_one(i),
+            on_cancel=lambda i=idx:   self.cancel_one(i),
+            on_remove=lambda i=idx:   self.remove_one(i),
+            on_priority=lambda i=idx: self.priority_one(i),
         )
         self.rows[idx] = row
         self._apply_filter_to_row(idx)
@@ -482,6 +487,79 @@ class TurboDownloader(ctk.CTk):
             fut = self.executor.submit(self._download_worker, idx)
             fut.add_done_callback(
                 lambda f: f.exception() and print("[WORKER]", f.exception()))
+
+    def priority_one(self, idx: int):
+        """Launches a waiting download immediately.
+        If all worker slots are taken, requeues the least-advanced downloading item
+        back to waiting (via pause_event + _requeue_set), then submits priority first.
+        """
+        if idx not in self.items:
+            return
+        it = self.items[idx]
+        if it.state != "waiting":
+            return
+
+        try:
+            workers = int(self._settings.get("workers", 10))
+        except Exception:
+            workers = 10
+
+        active = [(i, d) for i, d in self.items.items() if d.state == "downloading"]
+
+        if len(active) >= workers:
+            def _completion(item: DownloadItem) -> float:
+                if item.total_size and item.total_size > 0:
+                    return (item.resume_from + item.downloaded) / item.total_size
+                return 0.0
+
+            victim_idx, victim = min(active, key=lambda p: _completion(p[1]))
+
+            def _swap():
+                # 1. Mark victim as requeue so the worker exits to "waiting"
+                self._requeue_set.add(victim_idx)
+                victim.pause_event.set()
+
+                # 2. Poll until worker exited (max 2s)
+                for _ in range(40):
+                    if victim.state == "waiting":
+                        break
+                    time.sleep(0.05)
+
+                if idx not in self.items:
+                    self._requeue_set.discard(victim_idx)
+                    return
+
+                # 3. Clear events on victim (worker already cleared _requeue_set)
+                victim.pause_event.clear()
+                victim.cancel_event.clear()
+
+                # 4. Clear events on priority item and submit both
+                it.cancel_event.clear()
+                it.pause_event.clear()
+
+                def _submit():
+                    if idx not in self.items:
+                        return
+                    # Priority first, victim re-queued right after
+                    fut_p = self.executor.submit(self._download_worker, idx)
+                    fut_p.add_done_callback(
+                        lambda f: f.exception() and print("[PRIORITY]", f.exception()))
+                    fut_v = self.executor.submit(self._download_worker, victim_idx)
+                    fut_v.add_done_callback(
+                        lambda f: f.exception() and print("[REQUEUE]", f.exception()))
+
+                self.ui(_submit)
+
+            threading.Thread(target=_swap, daemon=True).start()
+
+        else:
+            # Free slot — submit directly
+            it.cancel_event.clear()
+            it.pause_event.clear()
+            self.executor = self.executor or ThreadPoolExecutor(max_workers=1)
+            fut = self.executor.submit(self._download_worker, idx)
+            fut.add_done_callback(
+                lambda f: f.exception() and print("[PRIORITY]", f.exception()))
 
     def remove_one(self, idx: int):
         row = self.rows.get(idx)
@@ -541,6 +619,8 @@ class TurboDownloader(ctk.CTk):
         row = self.rows.get(idx)
         if not row:
             return
+
+        row.update_state_style(it.state)
 
         state_labels = {
             "waiting":     "Waiting",
@@ -965,6 +1045,9 @@ class TurboDownloader(ctk.CTk):
         retry_max   = int(self._settings.get("retry_max",   3))
         retry_delay = int(self._settings.get("retry_delay", 5))
 
+        # Clear pause_event in case this item was requeued via priority
+        it.pause_event.clear()
+
         while True:
             # ── Clean exit if canceled between retries ───────────────────
             if self.stop_all_event.is_set() or it.cancel_event.is_set():
@@ -1091,7 +1174,12 @@ class TurboDownloader(ctk.CTk):
                                     _canceled = True
                                     break
                                 if it.pause_event.is_set():
-                                    it.state = "paused"
+                                    if idx in self._requeue_set:
+                                        # Priority requeue — go back to waiting, not paused
+                                        self._requeue_set.discard(idx)
+                                        it.state = "waiting"
+                                    else:
+                                        it.state = "paused"
                                     self.ui(self._update_row_ui, idx)
                                     self.ui(self._refresh_filter_counts)
                                     return
