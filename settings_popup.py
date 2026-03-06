@@ -13,6 +13,9 @@ CONFIG_FILE = CONFIG_DIR / "settings.json"
 # Default temp folder
 DEFAULT_TEMP_DIR = str(CONFIG_DIR / "tmp")
 
+# Default destination folder — system Downloads
+DEFAULT_DEST_DIR = str(pathlib.Path.home() / "Downloads")
+
 
 DEFAULT_EXTENSIONS = {
     ".mkv":  True,
@@ -30,10 +33,12 @@ def load_settings() -> dict:
     """Loads settings from the config file. Returns defaults if not found."""
     defaults = {
         "temp_dir":      DEFAULT_TEMP_DIR,
+        "default_dest":  DEFAULT_DEST_DIR,
         "retry_max":     3,
         "retry_delay":   5,
         "throttle":      0,
         "notifications": True,
+        "workers":       10,
         "segments":      4,
         "extensions":    DEFAULT_EXTENSIONS.copy(),
     }
@@ -156,6 +161,43 @@ class SettingsPopup(ctk.CTkToplevel):
         # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
 
+        # ── Section: Default destination folder ─────────────────────────
+        self._section(content, "Default destination folder",
+                      "Downloads go here when no custom path is set in the file tree popup.")
+
+        row_dest = ctk.CTkFrame(content, fg_color="transparent")
+        row_dest.pack(fill="x", padx=20, pady=(0, 4))
+
+        self._dest_entry = ctk.CTkEntry(row_dest)
+        self._dest_entry.insert(0, self._settings.get("default_dest", DEFAULT_DEST_DIR))
+        self._dest_entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
+
+        ctk.CTkButton(row_dest, text="Browse…", width=100,
+                      command=self._browse_dest).pack(side="left")
+
+        ctk.CTkButton(content, text="Reset to Downloads", width=180,
+                      fg_color="transparent", border_width=1,
+                      command=self._reset_dest).pack(anchor="w", padx=20, pady=(2, 8))
+
+        # ── Separator ───────────────────────────────────────────────────
+        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+
+        # ── Section: Concurrent workers ──────────────────────────────────
+        self._section(content, "Concurrent workers",
+                      "Number of simultaneous downloads. Default: 10.")
+
+        row_workers = ctk.CTkFrame(content, fg_color="transparent")
+        row_workers.pack(fill="x", padx=20, pady=(0, 8))
+        ctk.CTkLabel(row_workers, text="Workers:").pack(side="left", padx=(0, 8))
+        self._workers_entry = ctk.CTkEntry(row_workers, width=60)
+        self._workers_entry.insert(0, str(self._settings.get("workers", 10)))
+        self._workers_entry.pack(side="left")
+        ctk.CTkLabel(row_workers, text="(1–20)",
+                     text_color="gray").pack(side="left", padx=(8, 0))
+
+        # ── Separator ───────────────────────────────────────────────────
+        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+
         # ── Section: Notifications ──────────────────────────────────────
         self._section(content, "Desktop notifications",
                       "Alert when all downloads in a batch are complete.")
@@ -274,6 +316,16 @@ class SettingsPopup(ctk.CTkToplevel):
         self._ext_vars.pop(ext, None)
         row_frame.destroy()
 
+    def _browse_dest(self):
+        folder = filedialog.askdirectory(title="Choose default destination folder")
+        if folder:
+            self._dest_entry.delete(0, "end")
+            self._dest_entry.insert(0, folder)
+
+    def _reset_dest(self):
+        self._dest_entry.delete(0, "end")
+        self._dest_entry.insert(0, DEFAULT_DEST_DIR)
+
     def _browse_temp(self):
         folder = filedialog.askdirectory(title="Choisir le dossier temporaire")
         if folder:
@@ -287,7 +339,8 @@ class SettingsPopup(ctk.CTkToplevel):
     def _save(self):
         print("[settings] _save called")
 
-        self._settings["temp_dir"] = self._temp_entry.get().strip() or DEFAULT_TEMP_DIR
+        self._settings["temp_dir"]     = self._temp_entry.get().strip() or DEFAULT_TEMP_DIR
+        self._settings["default_dest"] = self._dest_entry.get().strip() or DEFAULT_DEST_DIR
 
         try:
             retry_max = int(self._retry_max_entry.get().strip() or "3")
@@ -309,6 +362,13 @@ class SettingsPopup(ctk.CTkToplevel):
         except ValueError as e:
             print(f"[settings] throttle parse error: {e!r}")
             self._settings["throttle"] = 0.0
+
+        # Workers
+        try:
+            workers = int(self._workers_entry.get().strip() or "10")
+            self._settings["workers"] = max(1, min(20, workers))
+        except ValueError:
+            self._settings["workers"] = 10
 
         # Notifications
         self._settings["notifications"] = self._notif_var.get()

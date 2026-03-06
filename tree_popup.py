@@ -47,19 +47,22 @@ class FileTreeNode:
 class FileTreePopup(ctk.CTkToplevel):
     """Popup de sélection — liste PLATE in le scroll (pas de frames imbriqués)."""
 
-    def __init__(self, master, files: list, on_confirm):
+    def __init__(self, master, files: list, on_confirm, default_dest: str = "", keep_tree: bool = True):
         """
-        files      : list of (file_url, rel_dir) returned by get_all_files
-        on_confirm : callback(selected_files: list[(url, rel_dir)])
+        files        : list of (file_url, rel_dir) returned by get_all_files
+        on_confirm   : callback(selected_files: list[(url, rel_dir)], dest_path: str)
+        default_dest : pre-filled destination path from settings
         """
         super().__init__(master)
         self.title("Select files to download")
-        self.geometry("760x620")
+        self.geometry("800x680")
         self.resizable(True, True)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", lambda: self._cancel())
 
-        self._on_confirm      = on_confirm
+        self._on_confirm   = on_confirm
+        self._default_dest = default_dest
+        self._keep_tree    = keep_tree
         self._root_nodes: list[FileTreeNode] = []
         self._all_nodes:  list[FileTreeNode] = []   # ordre DFS complet
         self._all_file_nodes: list[FileTreeNode] = []
@@ -136,6 +139,12 @@ class FileTreePopup(ctk.CTkToplevel):
         self._count_lbl = ctk.CTkLabel(top, text="", text_color="gray")
         self._count_lbl.pack(side="right")
 
+        self._keep_tree_var = ctk.BooleanVar(value=self._keep_tree)
+        ctk.CTkCheckBox(top, text="Keep folder structure",
+                        variable=self._keep_tree_var,
+                        font=ctk.CTkFont(size=12),
+                        command=self._on_keep_tree_toggle).pack(side="right", padx=(0, 16))
+
         # ── Search bar ───────────────────────────────────────────────────
         search_bar = ctk.CTkFrame(self, fg_color="transparent")
         search_bar.pack(fill="x", padx=14, pady=(0, 4))
@@ -187,11 +196,27 @@ class FileTreePopup(ctk.CTkToplevel):
 
         self._refresh_count()
 
+        # ── Destination bar ───────────────────────────────────────────────────
+        dest_bar = ctk.CTkFrame(self, fg_color="#232323")
+        dest_bar.pack(fill="x", padx=0, pady=0)
+
+        ctk.CTkLabel(dest_bar, text="📁  Destination:",
+                     font=ctk.CTkFont(size=12)).pack(side="left", padx=(14, 6), pady=10)
+
+        self._dest_entry = ctk.CTkEntry(dest_bar, placeholder_text="Choose a folder…")
+        if self._default_dest:
+            self._dest_entry.insert(0, self._default_dest)
+        self._dest_entry.pack(side="left", expand=True, fill="x", padx=(0, 8), pady=10)
+
+        ctk.CTkButton(dest_bar, text="Browse…", width=90,
+                      command=self._browse_dest).pack(side="left", padx=(0, 14), pady=10)
+
+        # ── Action buttons ────────────────────────────────────────────────────
         bot = ctk.CTkFrame(self, fg_color="transparent")
-        bot.pack(fill="x", padx=14, pady=(0, 12))
+        bot.pack(fill="x", padx=14, pady=(6, 12))
         ctk.CTkButton(bot, text="Cancel", width=120, fg_color="#5a5a5a",
                       command=self._cancel).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(bot, text="Start download", fg_color="#1f6aa5",
+        ctk.CTkButton(bot, text="⬇  Start download", fg_color="#1f6aa5",
                       command=self._confirm).pack(side="right")
 
     def _create_row(self, node: FileTreeNode):
@@ -220,11 +245,13 @@ class FileTreePopup(ctk.CTkToplevel):
             spacer.pack(side="left")
 
         icon = "📁 " if node.is_dir else _file_icon(node.name)
+        dir_color = self._dir_text_color()
         cb = ctk.CTkCheckBox(
             row,
             text=f"{icon}{node.name}",
             variable=node.var,
             font=ctk.CTkFont(size=12, weight="bold" if node.is_dir else "normal"),
+            text_color=dir_color if node.is_dir else ctk.ThemeManager.theme["CTkLabel"]["text_color"],
             command=lambda n=node: self._on_check(n),
         )
         cb.pack(side="left", padx=4)
@@ -453,12 +480,32 @@ class FileTreePopup(ctk.CTkToplevel):
 
     # ---------------------------------------------------------------- Confirmation
 
+    def _dir_text_color(self):
+        """Returns folder label color depending on keep_tree toggle."""
+        return "#dddddd" if self._keep_tree_var.get() else "#555555"
+
+    def _on_keep_tree_toggle(self):
+        """Refresh folder label colors when keep_tree is toggled."""
+        color = self._dir_text_color()
+        for node in self._all_nodes:
+            if node.is_dir and node._checkbox:
+                node._checkbox.configure(text_color=color)
+
+    def _browse_dest(self):
+        from tkinter import filedialog
+        folder = filedialog.askdirectory(title="Choose destination folder")
+        if folder:
+            self._dest_entry.delete(0, "end")
+            self._dest_entry.insert(0, folder)
+
     def _cancel(self):
-        """Fermeture sans sélection — appelle on_confirm([]) pour débloquer popup_done."""
+        """Close without selection — unblocks popup_done."""
         self.destroy()
-        self._on_confirm([])
+        self._on_confirm([], "", False)
 
     def _confirm(self):
-        selected = [(n.file_url, n.rel_dir) for n in self._all_file_nodes if n.var.get()]
+        selected   = [(n.file_url, n.rel_dir) for n in self._all_file_nodes if n.var.get()]
+        dest_path  = self._dest_entry.get().strip()
+        keep_tree  = self._keep_tree_var.get()
         self.destroy()
-        self._on_confirm(selected)
+        self._on_confirm(selected, dest_path, keep_tree)

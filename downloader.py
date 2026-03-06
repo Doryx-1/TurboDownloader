@@ -18,7 +18,7 @@ import shutil
 from models import DownloadItem, SegmentInfo
 from widgets import DownloadRow
 from tree_popup import FileTreePopup
-from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAULT_EXTENSIONS
+from settings_popup import SettingsPopup, load_settings, DEFAULT_TEMP_DIR, DEFAULT_DEST_DIR, DEFAULT_EXTENSIONS
 from history import HistoryManager, HistoryPopup
 from notifier import notify_batch_done
 from taskbar import TaskbarProgress
@@ -59,7 +59,8 @@ class TurboDownloader(ctk.CTk):
             "Connection": "keep-alive",
         })
 
-        self.download_path: Optional[str] = None
+        # Default destination loaded from settings (can be overridden per-batch)
+        self.download_path: Optional[str] = None  # resolved at start time
         self.items: dict[int, DownloadItem] = {}  # idx → item (no gaps)
         self._next_idx: int = 0                    # next index to assign
         self.rows: dict[int, DownloadRow] = {}
@@ -114,106 +115,167 @@ class TurboDownloader(ctk.CTk):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
-        main = ctk.CTkFrame(self)
-        main.pack(fill="both", expand=True, padx=10, pady=10)
+        # ── Root layout : sidebar gauche + zone principale droite ─────────────
+        root = ctk.CTkFrame(self, fg_color="transparent")
+        root.pack(fill="both", expand=True)
 
-        left = ctk.CTkFrame(main, width=370)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        left.pack_propagate(False)
+        # ── Sidebar ───────────────────────────────────────────────────────────
+        sidebar = ctk.CTkFrame(root, width=300, corner_radius=0, fg_color="#1a1a1a")
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
 
-        right = ctk.CTkFrame(main)
-        right.pack(side="right", fill="both", expand=True)
+        # Logo / titre
+        title_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        title_frame.pack(fill="x", padx=16, pady=(20, 4))
+        ctk.CTkLabel(title_frame, text="⬇  TurboDownloader",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(title_frame, text="v2.4", text_color="#555555",
+                     font=ctk.CTkFont(size=11)).pack(anchor="w")
 
-        # ---- Left panel ----
-        ctk.CTkLabel(left, text="URL(s) — one per line").pack(anchor="w", padx=12, pady=(12, 0))
-        self.url_box = ctk.CTkTextbox(left, width=340, height=90,
-                                      wrap="none", activate_scrollbars=True)
-        self.url_box.pack(padx=12, pady=(4, 2), fill="x")
-        ctk.CTkLabel(left, text="Paste multiple URLs, one per line.",
-                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
-                         anchor="w", padx=12, pady=(0, 4))
+        # Séparateur
+        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(8, 12))
 
-        ctk.CTkButton(left, text="Choose destination folder",
-                      command=self.choose_folder).pack(padx=12, pady=(4, 2), fill="x")
-        self.folder_label = ctk.CTkLabel(left, text="Folder: (not selected)",
-                                         wraplength=340, justify="left", text_color="gray")
-        self.folder_label.pack(anchor="w", padx=12, pady=(0, 8))
+        # ── URL box ───────────────────────────────────────────────────────────
+        ctk.CTkLabel(sidebar, text="URLs", font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#888888").pack(anchor="w", padx=16, pady=(0, 4))
+        self.url_box = ctk.CTkTextbox(sidebar, height=100, wrap="none",
+                                      activate_scrollbars=True,
+                                      fg_color="#242424", border_width=1,
+                                      border_color="#333333")
+        self.url_box.pack(fill="x", padx=16, pady=(0, 4))
+        ctk.CTkLabel(sidebar, text="One URL per line — spaces also work",
+                     text_color="#555555", font=ctk.CTkFont(size=10)).pack(
+                         anchor="w", padx=16, pady=(0, 12))
 
-        self.keep_tree_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(left, text="Keep original folder structure",
-                        variable=self.keep_tree_var).pack(anchor="w", padx=12, pady=(0, 10))
+        # ── Options ───────────────────────────────────────────────────────────
+        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 10))
 
-        ctk.CTkLabel(left, text="Simultaneous downloads (1–20)").pack(anchor="w", padx=12)
-        self.worker_entry = ctk.CTkEntry(left, width=80)
-        self.worker_entry.insert(0, "8")
-        self.worker_entry.pack(anchor="w", padx=12, pady=6)
+        # keep_tree_var — géré dans la popup FileTreePopup directement
+        self.keep_tree_var = ctk.BooleanVar(value=True)  # valeur initiale pour la popup
 
-        self.global_speed_label = ctk.CTkLabel(left, text="Global speed: –",
-                                               font=ctk.CTkFont(size=14, weight="bold"))
-        self.global_speed_label.pack(anchor="w", padx=12, pady=(6, 2))
+        # Workers — lus depuis les settings
 
-        self.global_dl_label = ctk.CTkLabel(left, text="Total downloaded: 0 MB",
-                                            text_color="gray")
-        self.global_dl_label.pack(anchor="w", padx=12, pady=(0, 10))
+        # ── Boutons START / STOP ──────────────────────────────────────────────
+        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 12))
 
-        btn_row = ctk.CTkFrame(left, fg_color="transparent")
-        btn_row.pack(fill="x", padx=12, pady=(4, 4))
-        self.start_btn = ctk.CTkButton(btn_row, text="START",
-                                       command=self.start_downloads, fg_color="#1f6aa5")
-        self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        self.stop_btn = ctk.CTkButton(btn_row, text="STOP ALL",
-                                      command=self.stop_all, fg_color="#8B0000")
-        self.stop_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
+        self.start_btn = ctk.CTkButton(
+            sidebar, text="▶  Start", height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#1f6aa5", hover_color="#1a5a8f",
+            command=self.start_downloads)
+        self.start_btn.pack(fill="x", padx=16, pady=(0, 6))
 
-        ctk.CTkButton(left, text="Clear finished/canceled",
-                      command=self.clear_finished).pack(fill="x", padx=12, pady=(6, 4))
+        self.stop_btn = ctk.CTkButton(
+            sidebar, text="⏹  Stop all", height=34,
+            fg_color="#3a1010", hover_color="#5a1515",
+            border_width=1, border_color="#8B0000",
+            command=self.stop_all)
+        self.stop_btn.pack(fill="x", padx=16, pady=(0, 12))
 
-        ctk.CTkLabel(left, text="TurboDownloader • © Thomas PIERRE",
-                     font=ctk.CTkFont(size=11), text_color="gray").pack(
-                         side="bottom", anchor="sw", padx=12, pady=(0, 6))
+        # ── Stats globales ────────────────────────────────────────────────────
+        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 10))
 
-        # Ligne boutons bas (Settings + History côte à côte)
-        bot_btns = ctk.CTkFrame(left, fg_color="transparent")
-        bot_btns.pack(side="bottom", fill="x", padx=12, pady=(4, 2))
-        ctk.CTkButton(bot_btns, text="Settings",
-                      fg_color="transparent", border_width=1,
-                      command=self._open_settings).pack(side="left", expand=True, fill="x", padx=(0, 4))
-        ctk.CTkButton(bot_btns, text="History",
-                      fg_color="transparent", border_width=1,
-                      command=self._open_history).pack(side="left", expand=True, fill="x", padx=(4, 0))
+        self.global_speed_label = ctk.CTkLabel(
+            sidebar, text="–", anchor="w",
+            font=ctk.CTkFont(size=18, weight="bold"))
+        self.global_speed_label.pack(anchor="w", padx=16, pady=(4, 0))
 
-        # ---- Right panel ----
-        top_bar = ctk.CTkFrame(right, fg_color="transparent")
-        top_bar.pack(fill="x", padx=10, pady=(10, 4))
+        self.global_dl_label = ctk.CTkLabel(
+            sidebar, text="Total: 0 B", anchor="w",
+            text_color="#555555", font=ctk.CTkFont(size=11))
+        self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 10))
+
+        # ── Bas sidebar : Clear + Settings + History ──────────────────────────
+
+
+        bot_btns = ctk.CTkFrame(sidebar, fg_color="transparent")
+        bot_btns.pack(side="bottom", fill="x", padx=16, pady=(0, 4))
+        ctk.CTkButton(bot_btns, text="⚙ Settings", height=30,
+                      fg_color="transparent", border_width=1, border_color="#333333",
+                      font=ctk.CTkFont(size=12),
+                      command=self._open_settings).pack(side="left", expand=True,
+                                                        fill="x", padx=(0, 4))
+        ctk.CTkButton(bot_btns, text="🕐 History", height=30,
+                      fg_color="transparent", border_width=1, border_color="#333333",
+                      font=ctk.CTkFont(size=12),
+                      command=self._open_history).pack(side="left", expand=True,
+                                                       fill="x", padx=(4, 0))
+
+        ctk.CTkLabel(sidebar, text="© Thomas PIERRE",
+                     font=ctk.CTkFont(size=10), text_color="#333333").pack(
+                         side="bottom", anchor="w", padx=16, pady=(0, 6))
+
+        # ── Zone principale droite ────────────────────────────────────────────
+        main_area = ctk.CTkFrame(root, fg_color="#111111", corner_radius=0)
+        main_area.pack(side="right", fill="both", expand=True)
+
+        # Barre du haut : titre + filtres
+        top_bar = ctk.CTkFrame(main_area, fg_color="#1a1a1a", corner_radius=0, height=50)
+        top_bar.pack(fill="x")
+        top_bar.pack_propagate(False)
+
         ctk.CTkLabel(top_bar, text="Downloads",
-                     font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+                         side="left", padx=16, pady=12)
 
+        # Compteur total dans le header
+        self._total_count_lbl = ctk.CTkLabel(
+            top_bar, text="", text_color="#555555",
+            font=ctk.CTkFont(size=11))
+        self._total_count_lbl.pack(side="left", padx=(0, 16), pady=12)
+
+        # Bouton Clear finished — bas droite du header
+        ctk.CTkButton(top_bar, text="🗑 Clear", width=80, height=28,
+                      font=ctk.CTkFont(size=11),
+                      fg_color="transparent", border_width=1, border_color="#333333",
+                      hover_color="#2a2a2a",
+                      command=self.clear_finished).pack(side="right", padx=(0, 10), pady=10)
+
+        # Filtres compacts
         filter_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
-        filter_frame.pack(side="right")
+        filter_frame.pack(side="right", padx=4)
 
         self._filter_btns = {}
         filters = [
-            ("all",         "All",        "#1f6aa5"),
-            ("downloading", "Downloading",    "#2e8b57"),
-            ("paused",      "Paused",    "#1f6aa5"),
-            ("moving",      "Moving", "#5a5a5a"),
-            ("waiting",     "Waiting",  "#5a5a5a"),
-            ("done",        "Done",    "#2e8b57"),
-            ("canceled",    "Canceled",     "#8B4513"),
-            ("error",       "Errors",     "#8B0000"),
+            ("all",         "All",          "#1f6aa5"),
+            ("downloading", "↓ Active",     "#2e8b57"),
+            ("paused",      "⏸ Paused",     "#5a7a9a"),
+            ("waiting",     "⏳ Waiting",    "#5a5a5a"),
+            ("done",        "✓ Done",       "#2e6b3e"),
+            ("error",       "✗ Errors",     "#8B0000"),
         ]
         for fkey, flabel, fcolor in filters:
             btn = ctk.CTkButton(
-                filter_frame, text=f"{flabel} (0)", width=110,
+                filter_frame, text=flabel, width=90, height=28,
+                font=ctk.CTkFont(size=11),
                 fg_color=fcolor if fkey == "all" else "transparent",
                 border_width=1, border_color=fcolor,
                 command=lambda k=fkey: self._set_filter(k),
             )
-            btn.pack(side="left", padx=3)
+            btn.pack(side="left", padx=2)
             self._filter_btns[fkey] = btn
 
-        self.scroll = ctk.CTkScrollableFrame(right)
-        self.scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Zone scroll + empty state
+        self._scroll_container = ctk.CTkFrame(main_area, fg_color="transparent")
+        self._scroll_container.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Empty state (affiché quand aucun DL)
+        self._empty_frame = ctk.CTkFrame(self._scroll_container, fg_color="transparent")
+        self._empty_frame.place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkLabel(self._empty_frame, text="⬇",
+                     font=ctk.CTkFont(size=48), text_color="#2a2a2a").pack()
+        ctk.CTkLabel(self._empty_frame, text="No downloads yet",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color="#333333").pack(pady=(4, 2))
+        ctk.CTkLabel(self._empty_frame, text="Paste a URL and hit Start",
+                     text_color="#3a3a3a", font=ctk.CTkFont(size=12)).pack()
+
+        self.scroll = ctk.CTkScrollableFrame(self._scroll_container,
+                                             fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Init empty state dès le démarrage
+        self.after(100, self._refresh_filter_counts)
 
     # ---------------------------------------------------------------- Thread-safe UI helpers
 
@@ -284,12 +346,6 @@ class TurboDownloader(ctk.CTk):
             self.url_box.insert("1.0", url)
             self.start_downloads()
         HistoryPopup(self, self._history, on_redownload)
-
-    def choose_folder(self):
-        folder = filedialog.askdirectory()
-        if folder:
-            self.download_path = folder
-            self.folder_label.configure(text=f"{folder}", text_color="white")
 
     # ----------------------------------------------------------------- Crawl
 
@@ -484,25 +540,25 @@ class TurboDownloader(ctk.CTk):
             row.eta_lbl.configure(text="ETA –")
 
         if it.state in ("done", "error", "canceled", "skipped"):
-            row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
+            row.pause_btn.configure(state="disabled", text="⏸", fg_color="transparent")
             row.cancel_btn.configure(state="disabled")
             row.remove_btn.configure(state="normal")
             if it.state == "done":
                 row.progress.set(1.0)
         elif it.state == "paused":
-            row.pause_btn.configure(state="normal", text="Resume", fg_color="#1f6aa5")
+            row.pause_btn.configure(state="normal", text="▶", fg_color="transparent", border_color="#1f6aa5", text_color="#1f6aa5")
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
         elif it.state == "downloading":
-            row.pause_btn.configure(state="normal", text="Pause", fg_color="#5a5a5a")
+            row.pause_btn.configure(state="normal", text="⏸", fg_color="transparent", border_color="#3a3a3a", text_color="#dddddd")
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
         elif it.state == "moving":
-            row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
+            row.pause_btn.configure(state="disabled", text="⏸", fg_color="transparent")
             row.cancel_btn.configure(state="disabled")
             row.remove_btn.configure(state="disabled")
         else:  # waiting
-            row.pause_btn.configure(state="disabled", text="Pause", fg_color="#5a5a5a")
+            row.pause_btn.configure(state="disabled", text="⏸", fg_color="transparent")
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
 
@@ -540,22 +596,33 @@ class TurboDownloader(ctk.CTk):
     def _refresh_filter_counts(self):
         counts = {k: 0 for k in self._filter_btns}
         active_items = list(self.items.values())
-        counts["all"] = len(active_items)
+        total = len(active_items)
+        counts["all"] = total
         for it in active_items:
             if it.state in counts:
                 counts[it.state] += 1
+            # "active" regroupe downloading + moving + waiting pour le filtre all
         labels = {
             "all":         "All",
-            "downloading": "Downloading",
-            "paused":      "Paused",
-            "moving":      "Moving",
-            "waiting":     "Waiting",
-            "done":        "Done",
-            "canceled":    "Canceled",
-            "error":       "Errors",
+            "downloading": "↓ Active",
+            "paused":      "⏸ Paused",
+            "waiting":     "⏳ Waiting",
+            "done":        "✓ Done",
+            "error":       "✗ Errors",
         }
         for k, btn in self._filter_btns.items():
-            btn.configure(text=f"{labels[k]} ({counts.get(k, 0)})")
+            cnt = counts.get(k, 0)
+            btn.configure(text=f"{labels[k]}  {cnt}" if cnt else labels[k])
+
+        # Compteur header
+        self._total_count_lbl.configure(
+            text=f"{total} item{'s' if total != 1 else ''}" if total else "")
+
+        # Empty state : visible seulement si aucun item
+        if total == 0:
+            self._empty_frame.lift()
+        else:
+            self._empty_frame.lower()
 
     # ----------------------------------------------------------------- Global speed
 
@@ -586,8 +653,8 @@ class TurboDownloader(ctk.CTk):
             speed = 0.0
 
         speed_text = "–" if speed == 0.0 else self._fmt_speed(speed)
-        self.global_speed_label.configure(text=f"Global speed: {speed_text}")
-        self.global_dl_label.configure(text=f"Total downloaded: {self._fmt_size(total)}")
+        self.global_speed_label.configure(text=speed_text)
+        self.global_dl_label.configure(text=f"Total: {self._fmt_size(total)}")
 
         # ── Taskbar update ────────────────────────────────────────────
         if self._taskbar:
@@ -1086,21 +1153,19 @@ class TurboDownloader(ctk.CTk):
 
     def start_downloads(self):
         if not self.download_path:
-            self.folder_label.configure(
-                text="Please choose a destination folder first", text_color="orange")
-            return
+            # Fallback — ne devrait pas arriver mais sécurité
+            import pathlib
+            self.download_path = str(pathlib.Path.home() / "Downloads")
 
         urls = self._get_urls()
         if not urls:
             return
 
         try:
-            workers = int(self.worker_entry.get().strip() or "8")
+            workers = int(self._settings.get("workers", 10))
         except Exception:
-            workers = 8
+            workers = 10
         workers = max(1, min(20, workers))
-        self.worker_entry.delete(0, "end")
-        self.worker_entry.insert(0, str(workers))
 
         self.stop_all_event.clear()
         self._scan_cancel_event.clear()
@@ -1114,7 +1179,8 @@ class TurboDownloader(ctk.CTk):
                 if self.stop_all_event.is_set():
                     break
                 self._process_one_url(url, workers, keep_tree)
-            self.ui(lambda: self.start_btn.configure(state="normal", text="START"))
+            self.ui(lambda: (self.start_btn.configure(state="normal", text="▶  Start"),
+                             self.title("TurboDownloader")))
 
         threading.Thread(target=process_all_urls, daemon=True).start()
 
@@ -1124,17 +1190,32 @@ class TurboDownloader(ctk.CTk):
         if not url.split("?")[0].lower().endswith(self._active_extensions) and not url.endswith("/"):
             url = url + "/"
 
-        # ── Case 1: direct file URL ──────────────────────────────────────
+        # ── Case 1: direct file URL → popup aussi (pour choisir destination) ──
         if url.split("?")[0].lower().endswith(self._active_extensions):
             name = unquote(os.path.basename(url.split("?")[0]) or "file.bin")
-            self._launch_downloads([(url, "")], workers, keep_tree)
-            self.ui(lambda n=name: self.folder_label.configure(
-                text=f"Direct download: {n}", text_color="white"))
+            files = [(url, "")]
+            popup_done = threading.Event()
+
+            def open_direct_popup(f=files):
+                default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
+
+                def on_confirm(selected_files, dest_path: str = "", kt: bool = True):
+                    if selected_files:
+                        effective_dest = dest_path or default_dest
+                        self._launch_downloads(selected_files, workers, kt,
+                                               dest_override=effective_dest)
+                    popup_done.set()
+
+                FileTreePopup(self, f, on_confirm,
+                              default_dest=default_dest, keep_tree=keep_tree)
+
+            self.ui(open_direct_popup)
+            popup_done.wait()
             return
 
         # ── Case 2: directory URL → crawl ───────────────────────────────
-        self.ui(lambda u=url: self.folder_label.configure(
-            text=f"Scanning: {u[:60]}…", text_color="gray"))
+        # Status affiché dans le titre de la fenêtre pendant le scan
+        self.ui(lambda u=url: self.title(f"TurboDownloader — Scanning {u[:40]}…"))
 
         self._scan_cancel_event.clear()
         timer = threading.Timer(self.SCAN_TIMEOUT, self._scan_cancel_event.set)
@@ -1151,36 +1232,39 @@ class TurboDownloader(ctk.CTk):
         if not files:
             msg = ("Scan interrupted (60s timeout) — no files found"
                    if timed_out else f"No files found: {url[:50]}")
-            self.ui(lambda m=msg: self.folder_label.configure(text=m, text_color="orange"))
+            self.ui(lambda m=msg: self.title(f"TurboDownloader — {m[:60]}"))
             return
 
         warning = (" ⚠ Scan interrupted after 60s — list may be incomplete"
                    if timed_out else "")
 
-        # open_popup must run on the UI thread and block until confirmed
-        # Use an Event to synchronize
+        # Use an Event to synchronize popup_done across threads
         popup_done = threading.Event()
 
         def open_popup():
-            def on_confirm(selected_files):
+            default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
+
+            def on_confirm(selected_files, dest_path: str = "", kt: bool = True):
                 if selected_files:
-                    self._launch_downloads(selected_files, workers, keep_tree)
+                    effective_dest = dest_path or default_dest
+                    self._launch_downloads(selected_files, workers, kt,
+                                           dest_override=effective_dest)
                 popup_done.set()
 
-            FileTreePopup(self, files, on_confirm)
-            if warning:
-                self.folder_label.configure(text=warning, text_color="orange")
+            FileTreePopup(self, files, on_confirm,
+                          default_dest=default_dest, keep_tree=keep_tree)
 
         self.ui(open_popup)
         # Wait for the user to confirm (or close) the popup before processing the next URL
         popup_done.wait()
 
-    def _launch_downloads(self, files: list, workers: int, keep_tree: bool):
+    def _launch_downloads(self, files: list, workers: int, keep_tree: bool,
+                           dest_override: str = ""):
         """Launches downloads for the selection from the file tree popup."""
         self.stop_all_event.clear()
 
         def init_ui():
-            base = self.download_path
+            base = dest_override or self.download_path or DEFAULT_DEST_DIR
             new_indices = []
             for file_url, rel_dir in files:
                 name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
