@@ -41,6 +41,7 @@ def load_settings() -> dict:
         "workers":       10,
         "segments":      4,
         "extensions":    DEFAULT_EXTENSIONS.copy(),
+        "all_files":     False,
     }
     if CONFIG_FILE.exists():
         try:
@@ -237,6 +238,16 @@ class SettingsPopup(ctk.CTkToplevel):
         self._section(content, "Downloadable extensions",
                       "Only files with these extensions will be detected during crawl.")
 
+        # "All files" toggle — disables the extension filter entirely
+        row_allfiles = ctk.CTkFrame(content, fg_color="transparent")
+        row_allfiles.pack(fill="x", padx=20, pady=(0, 6))
+        self._all_files_var = ctk.BooleanVar(value=self._settings.get("all_files", False))
+        ctk.CTkCheckBox(
+            row_allfiles,
+            text="All files  (disable extension filter during crawl)",
+            variable=self._all_files_var,
+        ).pack(side="left")
+
         ext_grid = ctk.CTkFrame(content, fg_color="transparent")
         ext_grid.pack(fill="x", padx=20, pady=(0, 4))
 
@@ -380,6 +391,9 @@ class SettingsPopup(ctk.CTkToplevel):
         self._settings["extensions"] = {
             ext: var.get() for ext, var in self._ext_vars.items()
         }
+
+        # All files mode
+        self._settings["all_files"] = self._all_files_var.get()
 
         save_settings(self._settings)
         self._on_save()

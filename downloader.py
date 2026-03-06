@@ -147,6 +147,9 @@ class TurboDownloader(ctk.CTk):
                      text_color="#555555", font=ctk.CTkFont(size=10)).pack(
                          anchor="w", padx=16, pady=(0, 12))
 
+        # ── Ctrl+V global : inject URLs from clipboard if focus ≠ url_box ───
+        self.bind("<Control-v>", self._on_global_paste)
+
         # ── Options ───────────────────────────────────────────────────────────
         ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 10))
 
@@ -347,6 +350,34 @@ class TurboDownloader(ctk.CTk):
                 urls.append(url)
         return urls
 
+    def _on_global_paste(self, event=None):
+        """Ctrl+V global — injects clipboard URLs into url_box unless it already has focus."""
+        import re
+        # If url_box already has focus, let the default paste behavior happen
+        focused = self.focus_get()
+        if focused is self.url_box or (hasattr(focused, 'master') and focused is self.url_box._textbox):
+            return  # normal paste
+
+        try:
+            clipboard = self.clipboard_get()
+        except Exception:
+            return
+
+        # Extract valid URLs from clipboard
+        pattern = re.compile(r'https?://[^\s<>"\'{}]+')
+        trailing_junk = re.compile(r'[.,;:!?\'"}>]+$')
+        urls = [trailing_junk.sub("", u) for u in pattern.findall(clipboard)]
+        urls = [u for u in urls if u]
+
+        if not urls:
+            return
+
+        # Inject into url_box (append if already has content)
+        current = self.url_box.get("1.0", "end").strip()
+        injection = "\n".join(urls)
+        self.url_box.delete("1.0", "end")
+        self.url_box.insert("1.0", (current + "\n" + injection).strip())
+
     def _open_settings(self):
         def on_save():
             # Update the existing dict in place (no reference reassignment)
@@ -397,7 +428,7 @@ class TurboDownloader(ctk.CTk):
                     continue
             if href.endswith("/"):
                 results.extend(self.get_all_files(full, base_url, cancel_event))
-            elif href.lower().endswith(self._active_extensions):
+            elif self._settings.get("all_files", False) or href.lower().endswith(self._active_extensions):
                 rel = full[len(base_url.rstrip("/")):]
                 rel = rel.lstrip("/")
                 rel_dir = os.path.dirname(rel)
