@@ -113,15 +113,12 @@ def node_available() -> bool:
 def configure_yt_dlp_node(ydl_opts: dict) -> dict:
     """
     Injects node js-runtime path into yt-dlp opts if available.
+    yt-dlp expects js_runtimes as a dict: {"node": {"path": "/path/to/node"}}
     """
     p = node_path()
     if p:
-        ydl_opts["extractor_args"] = ydl_opts.get("extractor_args", {})
-        # yt-dlp accepts js_runtimes as a list of "name:path" strings
-        ydl_opts.setdefault("js_runtimes", [])
-        runtime_entry = f"node:{p}"
-        if runtime_entry not in ydl_opts["js_runtimes"]:
-            ydl_opts["js_runtimes"].append(runtime_entry)
+        # Format required by current yt-dlp: dict of {runtime_name: {config}}
+        ydl_opts["js_runtimes"] = {"node": {"path": p}}
     return ydl_opts
 
 
