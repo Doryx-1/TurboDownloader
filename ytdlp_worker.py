@@ -8,6 +8,7 @@ Handles detection and downloading of streaming URLs
 import os
 import time
 from urllib.parse import urlparse
+import ffmpeg_setup
 
 
 # ── Domains routed to yt-dlp ────────────────────────────────────────────────
@@ -44,9 +45,8 @@ def check_ytdlp() -> bool:
 
 
 def _ffmpeg_available() -> bool:
-    """Returns True if ffmpeg is findable on PATH."""
-    import shutil
-    return shutil.which("ffmpeg") is not None
+    """Delegates to ffmpeg_setup for consistent ffmpeg detection."""
+    return ffmpeg_setup.ffmpeg_available()
 
 
 def _best_format() -> str:
@@ -60,20 +60,91 @@ def _best_format() -> str:
     return "best"
 
 
-def fetch_formats(url: str) -> dict:
-    """
-    Fetches available formats for a streaming URL without downloading.
+def _extract_qualities(info: dict) -> list:
+    """Extracts deduplicated quality list from a single video info dict."""
+    seen_heights = set()
+    qualities = []
+    formats = info.get("formats") or []
+    formats_sorted = sorted(
+        formats,
+        key=lambda f: (f.get("height") or 0, f.get("tbr") or 0),
+        reverse=True,
+    )
+    for f in formats_sorted:
+        height = f.get("height")
+        if not height:
+            continue
+        if height in seen_heights:
+            continue
+        seen_heights.add(height)
+        has_video = (f.get("vcodec") or "none") != "none"
+        if not has_video:
+            continue
+        qualities.append({
+            "label":     f"{height}p",
+            "height":    height,
+            "format_id": f.get("format_id", ""),
+            "ext":       f.get("ext", "mp4"),
+            "filesize":  f.get("filesize") or f.get("filesize_approx"),
+            "has_audio": (f.get("acodec") or "none") != "none",
+        })
+    # Always prepend "Best available"
+    qualities.insert(0, {
+        "label":     "Best available",
+        "height":    99999,
+        "format_id": "bestvideo+bestaudio/best" if _ffmpeg_available() else "best",
+        "ext":       "mkv" if _ffmpeg_available() else "mp4",
+        "filesize":  None,
+        "has_audio": True,
+    })
+    return qualities
 
-    Returns a dict:
+
+def _best_thumbnail(info: dict) -> str:
+    """Returns the best thumbnail URL from an info dict."""
+    thumbnails = info.get("thumbnails") or []
+    if thumbnails:
+        best = max(thumbnails,
+                   key=lambda t: (t.get("width") or 0) * (t.get("height") or 0),
+                   default=None)
+        return (best or {}).get("url", "") or info.get("thumbnail", "")
+    return info.get("thumbnail", "")
+
+
+def fetch_formats(url: str) -> dict | None:
+    """
+    Fetches available formats/entries for a streaming URL without downloading.
+
+    For a single video, returns:
     {
+        "type":      "video",
         "title":     str,
-        "thumbnail": str,           # URL of the thumbnail (best available)
-        "duration":  int,           # seconds
-        "qualities": [              # deduplicated, sorted best-first
-            {"label": "1080p", "format_id": "...", "ext": "mp4", "filesize": int|None},
-            ...
-        ]
+        "thumbnail": str,
+        "duration":  int,
+        "uploader":  str,
+        "url":       str,
+        "qualities": [ {"label", "height", "format_id", "ext", "filesize", "has_audio"}, ... ]
     }
+
+    For a playlist, returns:
+    {
+        "type":     "playlist",
+        "title":    str,
+        "uploader": str,
+        "url":      str,
+        "entries":  [
+            {
+                "title":     str,
+                "thumbnail": str,
+                "duration":  int,
+                "url":       str,
+                "qualities": [ ... ]   # may be empty if not extracted
+            },
+            ...
+        ],
+        "qualities": [ ... ]   # union of qualities from first entry (used as default)
+    }
+
     Returns None on error.
     """
     try:
@@ -82,10 +153,12 @@ def fetch_formats(url: str) -> dict:
         return None
 
     ydl_opts = {
-        "quiet":   True,
-        "no_color": True,
+        "quiet":         True,
+        "no_color":      True,
         "skip_download": True,
+        "extract_flat":  "in_playlist",
     }
+    ffmpeg_setup.configure_yt_dlp_node(ydl_opts)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -97,69 +170,70 @@ def fetch_formats(url: str) -> dict:
     if not info:
         return None
 
-    # ── Collect unique resolutions from all formats ──────────────────────
-    seen_heights = set()
-    qualities = []
+    # ── Playlist detection ───────────────────────────────────────────────────
+    entries = info.get("entries")
+    if entries is not None:
+        # It's a playlist
+        entry_list = []
+        for e in entries:
+            if not e:
+                continue
+            entry_url = e.get("url") or e.get("webpage_url") or e.get("id")
+            if not entry_url:
+                continue
+            # Ensure full URL for flat entries (may only have video id)
+            if not entry_url.startswith("http"):
+                entry_url = f"https://www.youtube.com/watch?v={entry_url}"
+            entry_list.append({
+                "title":     e.get("title") or e.get("id") or entry_url,
+                "thumbnail": e.get("thumbnail") or e.get("thumbnails", [{}])[0].get("url", "") if e.get("thumbnails") else e.get("thumbnail", ""),
+                "duration":  e.get("duration") or 0,
+                "url":       entry_url,
+                "qualities": [],   # populated lazily — not fetched upfront for speed
+            })
 
-    formats = info.get("formats") or []
-    # Sort by height descending so we pick best format per resolution
-    formats_sorted = sorted(
-        formats,
-        key=lambda f: (f.get("height") or 0, f.get("tbr") or 0),
-        reverse=True,
-    )
+        # Use qualities from playlist-level info if available, else empty
+        top_qualities = _extract_qualities(info) if info.get("formats") else [{
+            "label":     "Best available",
+            "height":    99999,
+            "format_id": "bestvideo+bestaudio/best" if _ffmpeg_available() else "best",
+            "ext":       "mkv" if _ffmpeg_available() else "mp4",
+            "filesize":  None,
+            "has_audio": True,
+        }]
 
-    for f in formats_sorted:
-        height = f.get("height")
-        if not height:
-            continue
-        if height in seen_heights:
-            continue
-        seen_heights.add(height)
-        label = f"{height}p"
-        # Prefer format with both video+audio if available
-        has_audio = (f.get("acodec") or "none") != "none"
-        has_video = (f.get("vcodec") or "none") != "none"
-        if not has_video:
-            continue
-        qualities.append({
-            "label":     label,
-            "height":    height,
-            "format_id": f.get("format_id", ""),
-            "ext":       f.get("ext", "mp4"),
-            "filesize":  f.get("filesize") or f.get("filesize_approx"),
-            "has_audio": has_audio,
-        })
+        return {
+            "type":      "playlist",
+            "title":     info.get("title") or info.get("playlist_title") or url,
+            "uploader":  info.get("uploader") or info.get("channel") or "",
+            "url":       url,
+            "entries":   entry_list,
+            "qualities": top_qualities,
+        }
 
-    # Always add "best" as fallback at top
-    qualities.insert(0, {
-        "label":     "Best available",
-        "height":    99999,
-        "format_id": "bestvideo+bestaudio/best" if _ffmpeg_available() else "best",
-        "ext":       "mkv" if _ffmpeg_available() else "mp4",
-        "filesize":  None,
-        "has_audio": True,
-    })
-
-    # Thumbnail — pick best
-    thumbnails = info.get("thumbnails") or []
-    thumbnail_url = ""
-    if thumbnails:
-        # Prefer highest resolution
-        best_thumb = max(thumbnails,
-                         key=lambda t: (t.get("width") or 0) * (t.get("height") or 0),
-                         default=None)
-        thumbnail_url = (best_thumb or {}).get("url", "") or info.get("thumbnail", "")
+    # ── Single video ─────────────────────────────────────────────────────────
+    # Re-fetch without extract_flat to get full format list
+    ydl_opts_full = {
+        "quiet":         True,
+        "no_color":      True,
+        "skip_download": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts_full) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        print(f"[ytdlp] fetch_formats (full) error: {e}")
+        return None
 
     return {
+        "type":      "video",
         "title":     info.get("title", url),
-        "thumbnail": thumbnail_url,
+        "thumbnail": _best_thumbnail(info),
         "duration":  info.get("duration", 0),
         "uploader":  info.get("uploader", ""),
-        "qualities": qualities,
+        "url":       url,
+        "qualities": _extract_qualities(info),
     }
-
-
 
 
 def run(idx: int, app) -> None:
@@ -234,12 +308,25 @@ def run(idx: int, app) -> None:
     has_ffmpeg = _ffmpeg_available()
 
     if audio_only:
-        fmt = "bestaudio/best"
+        if has_ffmpeg:
+            # ffmpeg available → download bestaudio and convert to mp3
+            fmt = "bestaudio/best"
+        else:
+            # No ffmpeg → prefer m4a (natively playable), fallback to best audio
+            fmt = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
     elif format_id:
-        # Specific resolution chosen in popup — add bestaudio for merging if needed
+        # Specific resolution chosen in popup
         fmt = f"{format_id}+bestaudio/{format_id}" if has_ffmpeg else format_id
     else:
-        fmt = _best_format()
+        # "Best available" — prefer 1080p, allow lower if not available
+        # Works with or without ffmpeg: yt-dlp picks best pre-merged if no ffmpeg
+        fmt = (
+            "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best"
+            if has_ffmpeg else
+            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[height<=1080]+bestaudio/"
+            "best[height<=1080]/best"
+        )
 
     ydl_opts = {
         "format":         fmt,
@@ -250,15 +337,20 @@ def run(idx: int, app) -> None:
         "noprogress":     False,
     }
     if audio_only and has_ffmpeg:
-        # Convert to mp3
+        # Convert to mp3 320kbps via ffmpeg postprocessor
         ydl_opts["postprocessors"] = [{
-            "key":            "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
+            "key":              "FFmpegExtractAudio",
+            "preferredcodec":   "mp3",
             "preferredquality": "320",
         }]
-        ydl_opts["outtmpl"] = os.path.join(dest_dir, "%(title)s.%(ext)s")
     elif has_ffmpeg:
         ydl_opts["merge_output_format"] = "mkv"
+    else:
+        pass  # No ffmpeg — m4a stays as-is
+
+    # ── Inject ffmpeg location and Node.js runtime ───────────────────────────
+    ffmpeg_setup.configure_yt_dlp_ffmpeg(ydl_opts)
+    ffmpeg_setup.configure_yt_dlp_node(ydl_opts)
 
     # ── Download ─────────────────────────────────────────────────────────────
     try:

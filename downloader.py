@@ -24,6 +24,7 @@ from notifier import notify_batch_done
 from taskbar import TaskbarProgress
 import ytdlp_worker
 from ytdlp_popup import YtdlpPopup
+import ffmpeg_setup
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
@@ -99,6 +100,7 @@ class TurboDownloader(ctk.CTk):
         # Slight delay to let Tk create the window first
         self._taskbar: TaskbarProgress = None
         self.after(500, self._init_taskbar)
+        self.after(1000, self._check_dependencies)
 
         self.after(80, self._process_ui_queue)
         self.after(1000, self._tick_global_speed)
@@ -117,6 +119,33 @@ class TurboDownloader(ctk.CTk):
         except Exception as e:
             print(f"[taskbar] init différée échouée: {e}")
             self._taskbar = TaskbarProgress(0)  # no-op fallback
+
+    def _check_dependencies(self):
+        """Checks ffmpeg and Node.js availability. Installs Node if missing."""
+        status = ffmpeg_setup.get_status()
+
+        if not status["ffmpeg"]:
+            print("[deps] ffmpeg not found — place ffmpeg.exe next to main.py for best quality")
+
+        if not status["node"]:
+            print("[deps] Node.js not found — installing via nodeenv…")
+
+            def on_progress(msg):
+                print(f"[deps] {msg}")
+
+            def on_done():
+                print("[deps] Node.js ready ✓ — yt-dlp will use it for next downloads")
+
+            def on_error(msg):
+                print(f"[deps] Node.js install failed: {msg}")
+
+            ffmpeg_setup.install_nodeenv(
+                on_progress=on_progress,
+                on_done=on_done,
+                on_error=on_error,
+            )
+        else:
+            print(f"[deps] Node.js found at {status['node_path']}")
 
     # ------------------------------------------------------------------ UI
 
