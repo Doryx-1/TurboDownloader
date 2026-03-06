@@ -318,20 +318,33 @@ class TurboDownloader(ctk.CTk):
         return box["v"]
 
     def _get_urls(self) -> list[str]:
-        """Returns the list of entered URLs.
-        Accepted separators: newline OR space(s).
-        Empty entries and duplicates are ignored, order is preserved.
+        """Extracts all URLs from the input box — works with raw URLs, mixed
+        text (copy-paste from a webpage, an email, a markdown doc, etc.).
+        Strips surrounding punctuation artifacts like trailing ) ] > , ; .
+        Deduplicates while preserving order.
         """
-        raw = self.url_box.get("1.0", "end").strip()
-        tokens = raw.split()   # split() with no arg splits on any whitespace (space, tab, newline)
-        # Keep only tokens that look like a URL (start with http)
-        seen = set()
-        urls = []
-        for t in tokens:
-            t = t.strip()
-            if t and t.lower().startswith("http") and t not in seen:
-                seen.add(t)
-                urls.append(t)
+        import re
+        raw = self.url_box.get("1.0", "end")
+
+        # Match anything that looks like an http(s) URL.
+        # Brackets [] are kept — they appear in real-world URLs (release names,
+        # Debrid links, etc.). Only stop at whitespace and angle/curly brackets.
+        pattern = re.compile(
+            r'https?://'          # scheme
+            r'[^\s<>"\'{}]+'     # URL body — stops at whitespace, <>"'{}
+        )
+        candidates = pattern.findall(raw)
+
+        # Strip trailing punctuation that is never part of a real URL
+        trailing_junk = re.compile(r'[.,;:!?\'"}>]+$')
+
+        seen: set = set()
+        urls: list = []
+        for url in candidates:
+            url = trailing_junk.sub("", url)
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
         return urls
 
     def _open_settings(self):
@@ -1171,32 +1184,75 @@ class TurboDownloader(ctk.CTk):
         self._scan_cancel_event.clear()
         keep_tree = self.keep_tree_var.get()
 
-        # Traiter chaque URL séquentiellement in un thread dédié
         self.start_btn.configure(state="disabled", text="Scanning…")
 
         def process_all_urls():
-            for url in urls:
+            # ── Phase 1 : probe + crawl toutes les URLs en parallèle ─────────
+            all_files: list = []   # (file_url, rel_dir)
+            errors:    list = []   # URLs qui ont échoué
+            lock = threading.Lock()
+
+            def handle_one(url: str):
+                """Probe + éventuel crawl pour une URL — appelé dans un thread."""
                 if self.stop_all_event.is_set():
-                    break
-                self._process_one_url(url, workers, keep_tree)
-            self.ui(lambda: (self.start_btn.configure(state="normal", text="▶  Start"),
-                             self.title("TurboDownloader")))
+                    return
 
-        threading.Thread(target=process_all_urls, daemon=True).start()
+                path_lower = url.split("?")[0].lower()
 
-    def _process_one_url(self, url: str, workers: int, keep_tree: bool):
-        """Processes a single URL: direct file or crawl + popup."""
-        # Normalize the URL
-        if not url.split("?")[0].lower().endswith(self._active_extensions) and not url.endswith("/"):
-            url = url + "/"
+                if path_lower.endswith(self._active_extensions):
+                    url_type = "file"
+                elif url.endswith("/"):
+                    url_type = "directory"
+                else:
+                    url_type = self._probe_url(url)
+                    if url_type == "unknown":
+                        with lock:
+                            errors.append(url)
+                        return
+                    if url_type == "directory":
+                        url = url.rstrip("/") + "/"
 
-        # ── Case 1: direct file URL → popup aussi (pour choisir destination) ──
-        if url.split("?")[0].lower().endswith(self._active_extensions):
-            name = unquote(os.path.basename(url.split("?")[0]) or "file.bin")
-            files = [(url, "")]
+                if url_type == "file":
+                    with lock:
+                        all_files.append((url, ""))
+                else:
+                    # Crawl du répertoire
+                    found = self.get_all_files(url)
+                    with lock:
+                        all_files.extend(found)
+
+            # Lancer tous les probes/crawls en parallèle (max 8 threads)
+            n = min(len(urls), 8)
+            self.ui(lambda: self.title(
+                f"TurboDownloader — Scanning {len(urls)} URL{'s' if len(urls)>1 else ''}…"))
+            with ThreadPoolExecutor(max_workers=n) as pool:
+                list(pool.map(handle_one, urls))
+
+            if self.stop_all_event.is_set():
+                self.ui(lambda: (self.start_btn.configure(state="normal", text="▶  Start"),
+                                 self.title("TurboDownloader")))
+                return
+
+            # ── Phase 2 : une seule popup avec tous les fichiers ──────────────
+            if not all_files:
+                msg = f"No files found ({len(errors)} error(s))" if errors else "No files found"
+                self.ui(lambda m=msg: (
+                    self.title(f"TurboDownloader — {m}"),
+                    self.start_btn.configure(state="normal", text="▶  Start")
+                ))
+                return
+
+            # Dédupliquer (plusieurs URLs peuvent pointer les mêmes fichiers)
+            seen: set = set()
+            unique_files: list = []
+            for item in all_files:
+                if item[0] not in seen:
+                    seen.add(item[0])
+                    unique_files.append(item)
+
             popup_done = threading.Event()
 
-            def open_direct_popup(f=files):
+            def open_popup():
                 default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
 
                 def on_confirm(selected_files, dest_path: str = "", kt: bool = True):
@@ -1206,57 +1262,41 @@ class TurboDownloader(ctk.CTk):
                                                dest_override=effective_dest)
                     popup_done.set()
 
-                FileTreePopup(self, f, on_confirm,
+                FileTreePopup(self, unique_files, on_confirm,
                               default_dest=default_dest, keep_tree=keep_tree)
 
-            self.ui(open_direct_popup)
+            self.ui(open_popup)
             popup_done.wait()
-            return
 
-        # ── Case 2: directory URL → crawl ───────────────────────────────
-        # Status affiché dans le titre de la fenêtre pendant le scan
-        self.ui(lambda u=url: self.title(f"TurboDownloader — Scanning {u[:40]}…"))
+            self.ui(lambda: (self.start_btn.configure(state="normal", text="▶  Start"),
+                             self.title("TurboDownloader")))
 
-        self._scan_cancel_event.clear()
-        timer = threading.Timer(self.SCAN_TIMEOUT, self._scan_cancel_event.set)
-        timer.daemon = True
-        timer.start()
+        threading.Thread(target=process_all_urls, daemon=True).start()
 
-        files = self.get_all_files(url)
-        timed_out = self._scan_cancel_event.is_set()
-        timer.cancel()
+    def _probe_url(self, url: str) -> str:
+        """Probes a URL with a HEAD request to determine its nature.
+        Returns: 'file' | 'directory' | 'unknown'
+        - 'file'      : Content-Type is not text/html (binary, video, etc.)
+        - 'directory' : Content-Type is text/html — likely an index page to crawl
+        - 'unknown'   : request failed (404, timeout, network error)
+        """
+        try:
+            r = self.req.head(url, timeout=15, allow_redirects=True)
+            if r.status_code == 405:
+                # HEAD not allowed — fall back to GET with stream=True
+                r = self.req.get(url, timeout=15, allow_redirects=True, stream=True)
+                r.close()
+            if not r.ok:
+                return "unknown"
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if "text/html" in ct:
+                return "directory"
+            return "file"
+        except Exception as e:
+            print(f"[probe] {e}")
+            return "unknown"
 
-        if self.stop_all_event.is_set():
-            return
 
-        if not files:
-            msg = ("Scan interrupted (60s timeout) — no files found"
-                   if timed_out else f"No files found: {url[:50]}")
-            self.ui(lambda m=msg: self.title(f"TurboDownloader — {m[:60]}"))
-            return
-
-        warning = (" ⚠ Scan interrupted after 60s — list may be incomplete"
-                   if timed_out else "")
-
-        # Use an Event to synchronize popup_done across threads
-        popup_done = threading.Event()
-
-        def open_popup():
-            default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
-
-            def on_confirm(selected_files, dest_path: str = "", kt: bool = True):
-                if selected_files:
-                    effective_dest = dest_path or default_dest
-                    self._launch_downloads(selected_files, workers, kt,
-                                           dest_override=effective_dest)
-                popup_done.set()
-
-            FileTreePopup(self, files, on_confirm,
-                          default_dest=default_dest, keep_tree=keep_tree)
-
-        self.ui(open_popup)
-        # Wait for the user to confirm (or close) the popup before processing the next URL
-        popup_done.wait()
 
     def _launch_downloads(self, files: list, workers: int, keep_tree: bool,
                            dest_override: str = ""):
