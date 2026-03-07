@@ -112,13 +112,15 @@ def node_available() -> bool:
 
 def configure_yt_dlp_node(ydl_opts: dict) -> dict:
     """
-    Injects node js-runtime path into yt-dlp opts if available.
-    yt-dlp expects js_runtimes as a dict: {"node": {"path": "/path/to/node"}}
+    Injects Node.js path into yt-dlp opts.
+    yt-dlp attend: js_runtimes = {"node": {"path": "/chemin/vers/node"}}
+    Le chemin doit utiliser des forward slashes (important sur Windows).
     """
     p = node_path()
-    if p:
-        # Format required by current yt-dlp: dict of {runtime_name: {config}}
-        ydl_opts["js_runtimes"] = {"node": {"path": p}}
+    if not p:
+        return ydl_opts
+    p_norm = p.replace("\\", "/")
+    ydl_opts["js_runtimes"] = {"node": {"path": p_norm}}
     return ydl_opts
 
 
