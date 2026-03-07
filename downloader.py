@@ -1510,83 +1510,170 @@ class TurboDownloader(ctk.CTk):
         """Launches downloads for the selection from the file tree popup.
         Each item in files is (url, rel_dir) or (url, rel_dir, worker_type).
         worker_type is 'http' (default) or 'ytdlp'.
+
+        For large batches (400+ items), rows are created in chunks of 25
+        to avoid freezing the UI thread.
         """
         self.stop_all_event.clear()
+        ROW_BATCH = 25   # rows created per UI tick
 
-        def init_ui():
-            base = dest_override or self.download_path or DEFAULT_DEST_DIR
-            new_indices = []
-            for entry in files:
-                file_url  = entry[0]
-                rel_dir   = entry[1] if len(entry) > 1 else ""
-                wtype     = entry[2] if len(entry) > 2 else "http"
-                format_id = entry[3] if len(entry) > 3 else None
-                audio_only = entry[4] if len(entry) > 4 else False
-                entry_dest = entry[5] if len(entry) > 5 else ""
+        def _make_item(entry, base) -> tuple:
+            """Builds a (idx, DownloadItem) pair from a file entry. Pure data — no UI."""
+            file_url   = entry[0]
+            rel_dir    = entry[1] if len(entry) > 1 else ""
+            wtype      = entry[2] if len(entry) > 2 else "http"
+            format_id  = entry[3] if len(entry) > 3 else None
+            audio_only = entry[4] if len(entry) > 4 else False
+            entry_dest = entry[5] if len(entry) > 5 else ""
 
-                # Effective destination: per-item dest (from ytdlp popup) wins
-                effective_base = entry_dest or base
+            effective_base = entry_dest or base
+            name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
+            if wtype == "ytdlp":
+                from urllib.parse import urlparse
+                host = urlparse(file_url).netloc.lstrip("www.")
+                suffix = " [MP3]" if audio_only else ""
+                name = f"[yt-dlp] {host}{suffix}"
 
-                name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
-                if wtype == "ytdlp":
-                    from urllib.parse import urlparse
-                    host = urlparse(file_url).netloc.lstrip("www.")
-                    suffix = " [MP3]" if audio_only else ""
-                    name = f"[yt-dlp] {host}{suffix}"
+            dest_dir = os.path.join(effective_base, rel_dir) if rel_dir else effective_base
+            dest     = os.path.join(dest_dir, name)
 
-                dest_dir = os.path.join(effective_base, rel_dir) if rel_dir else effective_base
-                dest = os.path.join(dest_dir, name)
+            # Reuse existing canceled/errored row for same dest
+            existing_idx = next(
+                (i for i, it in self.items.items()
+                 if it.dest_path == dest
+                 and it.state in ("canceled", "error", "skipped")),
+                None
+            )
 
-                # Reuse an existing row if the same file was previously canceled/errored
-                existing_idx = next(
-                    (i for i, it in self.items.items()
-                     if it.dest_path == dest
-                     and it.state in ("canceled", "error", "skipped")),
-                    None
-                )
+            if existing_idx is not None:
+                it = self.items[existing_idx]
+                it.url          = file_url
+                it.downloaded   = 0
+                it.resume_from  = 0
+                it.total_size   = None
+                it.error_msg    = ""
+                it.state        = "waiting"
+                it.cancel_event = threading.Event()
+                it.pause_event  = threading.Event()
+                it.temp_path    = ""
+                it.retry_count  = 0
+                it.segments     = []
+                it.speed_window.clear()
+                it.worker_type   = wtype
+                it.yt_format_id  = format_id   # type: ignore[attr-defined]
+                it.yt_audio_only = audio_only  # type: ignore[attr-defined]
+                return (existing_idx, it, True)   # True = reuse
+            else:
+                idx = self._next_idx
+                self._next_idx += 1
+                it = DownloadItem(url=file_url, filename=name,
+                                  dest_path=dest, relative_path=rel_dir)
+                it.worker_type   = wtype        # type: ignore[attr-defined]
+                it.yt_format_id  = format_id    # type: ignore[attr-defined]
+                it.yt_audio_only = audio_only   # type: ignore[attr-defined]
+                self.items[idx]  = it
+                return (idx, it, False)          # False = new
 
-                if existing_idx is not None:
-                    it = self.items[existing_idx]
-                    it.url          = file_url
-                    it.downloaded   = 0
-                    it.resume_from  = 0
-                    it.total_size   = None
-                    it.error_msg    = ""
-                    it.state        = "waiting"
-                    it.cancel_event = threading.Event()
-                    it.pause_event  = threading.Event()
-                    it.temp_path    = ""
-                    it.retry_count  = 0
-                    it.segments     = []
-                    it.speed_window.clear()
-                    it.worker_type   = wtype
-                    it.yt_format_id  = format_id   # type: ignore[attr-defined]
-                    it.yt_audio_only = audio_only  # type: ignore[attr-defined]
-                    self._update_row_ui(existing_idx)
-                    new_indices.append(existing_idx)
+        def init_ui_chunked(chunk: list, ready_ev: threading.Event,
+                            indices_out: list, base: str):
+            """Processes one chunk of entries on the UI thread, then signals ready."""
+            for entry in chunk:
+                idx, it, reused = _make_item(entry, base)
+                if reused:
+                    self._update_row_ui(idx)
                 else:
-                    idx = self._next_idx
-                    self._next_idx += 1
-                    it = DownloadItem(url=file_url, filename=name,
-                                      dest_path=dest, relative_path=rel_dir)
-                    it.worker_type   = wtype        # type: ignore[attr-defined]
-                    it.yt_format_id  = format_id    # type: ignore[attr-defined]
-                    it.yt_audio_only = audio_only   # type: ignore[attr-defined]
-                    self.items[idx] = it
                     self._add_row_for_item(idx, it)
                     self._update_row_ui(idx)
-                    new_indices.append(idx)
-
-            return new_indices
+                indices_out.append(idx)
+            ready_ev.set()
 
         def _run():
             nonlocal new_indices
-            new_indices = self.ui_call(init_ui)
+            base         = dest_override or self.download_path or DEFAULT_DEST_DIR
+            new_indices  = []
+
+            # Split into chunks and submit one per UI tick — no single blocking call
+            chunks = [files[i:i+ROW_BATCH] for i in range(0, len(files), ROW_BATCH)]
+            # Timeout scales with batch size: 5s base + 0.1s per item
+            timeout = max(10, 5 + len(files) * 0.1)
+
+            for chunk in chunks:
+                ev = threading.Event()
+                self.ui(init_ui_chunked, chunk, ev, new_indices, base)
+                if not ev.wait(timeout=timeout):
+                    raise RuntimeError("ui_call timeout during row creation")
+                # Yield briefly so the UI can repaint between chunks
+                time.sleep(0.01)
             self.executor = ThreadPoolExecutor(max_workers=workers)
 
             batch_set    = set(new_indices)
             _lock        = threading.Lock()
             _remaining   = [len(batch_set)]
+            MAX_AUTO_RETRY = 2   # automatic retry attempts for yt-dlp errors
+
+            def _retry_errors(attempt: int):
+                """Re-submits failed yt-dlp items with is_retry=True."""
+                if self.stop_all_event.is_set():
+                    return
+                failed = [
+                    i for i in batch_set
+                    if i in self.items
+                    and self.items[i].state == "error"
+                    and getattr(self.items[i], "worker_type", "http") == "ytdlp"
+                ]
+                if not failed:
+                    return
+                print(f"[retry] attempt {attempt}/{MAX_AUTO_RETRY} — {len(failed)} item(s)")
+                with _lock:
+                    _remaining[0] += len(failed)
+                for i in failed:
+                    it = self.items[i]
+                    it.state        = "waiting"
+                    it.error_msg    = ""
+                    it.downloaded   = 0
+                    it.cancel_event = threading.Event()
+                    it.pause_event  = threading.Event()
+                    it.yt_retry     = True   # type: ignore[attr-defined]
+                    self.ui(self._update_row_ui, i)
+                    self.ui(self._refresh_filter_counts)
+                    fut = self.executor.submit(self._ytdlp_worker, i)
+                    fut.add_done_callback(_on_future_done)
+
+            def _on_batch_complete():
+                """Called once when all current futures are done. Handles retry logic."""
+                errors = sum(1 for i in batch_set
+                             if i in self.items and self.items[i].state == "error"
+                             and getattr(self.items[i], "worker_type", "http") == "ytdlp")
+
+                # Determine how many retries have been done (max retry_count across batch)
+                attempt = max(
+                    (getattr(self.items[i], "yt_retry_count", 0)
+                     for i in batch_set if i in self.items),
+                    default=0
+                )
+
+                if errors > 0 and attempt < MAX_AUTO_RETRY:
+                    # Increment retry counter on all errored items
+                    for i in batch_set:
+                        if i in self.items and self.items[i].state == "error":
+                            cur = getattr(self.items[i], "yt_retry_count", 0)
+                            self.items[i].yt_retry_count = cur + 1  # type: ignore
+                    time.sleep(2)   # brief pause before retry
+                    _retry_errors(attempt + 1)
+                    return  # notification deferred to next completion
+
+                # All done (or no more retries) — notify
+                if not self._settings.get("notifications", True):
+                    return
+                def _notify_thread():
+                    done     = sum(1 for i in batch_set
+                                   if i in self.items and self.items[i].state == "done")
+                    errs     = sum(1 for i in batch_set
+                                   if i in self.items and self.items[i].state == "error")
+                    canceled = sum(1 for i in batch_set
+                                   if i in self.items and self.items[i].state in ("canceled", "skipped"))
+                    notify_batch_done(done, errs, canceled)
+                threading.Thread(target=_notify_thread, daemon=True).start()
 
             def _on_future_done(f):
                 f.exception()
@@ -1594,17 +1681,7 @@ class TurboDownloader(ctk.CTk):
                     _remaining[0] -= 1
                     if _remaining[0] > 0:
                         return
-                if not self._settings.get("notifications", True):
-                    return
-                def _notify_thread():
-                    done     = sum(1 for i in batch_set
-                                   if i in self.items and self.items[i].state == "done")
-                    errors   = sum(1 for i in batch_set
-                                   if i in self.items and self.items[i].state == "error")
-                    canceled = sum(1 for i in batch_set
-                                   if i in self.items and self.items[i].state in ("canceled", "skipped"))
-                    notify_batch_done(done, errors, canceled)
-                threading.Thread(target=_notify_thread, daemon=True).start()
+                threading.Thread(target=_on_batch_complete, daemon=True).start()
 
             for i in new_indices:
                 it = self.items[i]

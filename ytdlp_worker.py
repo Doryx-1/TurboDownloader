@@ -243,8 +243,9 @@ def run(idx: int, app) -> None:
     """
     it = app.items[idx]
 
-    audio_only = getattr(it, "yt_audio_only", False)
-    format_id  = getattr(it, "yt_format_id",  None)  # None → use default best
+    audio_only  = getattr(it, "yt_audio_only",    False)
+    format_id   = getattr(it, "yt_format_id",     None)
+    is_retry    = getattr(it, "yt_retry",          False)  # True on auto-retry attempt
 
     # ── yt-dlp availability check ────────────────────────────────────────────
     try:
@@ -351,6 +352,12 @@ def run(idx: int, app) -> None:
     # ── Inject ffmpeg location and Node.js runtime ───────────────────────────
     ffmpeg_setup.configure_yt_dlp_ffmpeg(ydl_opts)
     ffmpeg_setup.configure_yt_dlp_node(ydl_opts)
+
+    # ── On retry: force web player client to bypass n-challenge failures ─────
+    if is_retry:
+        ydl_opts["extractor_args"] = {
+            "youtube": {"player_client": ["web"], "player_skip": ["webpage"]}
+        }
 
     # ── Download ─────────────────────────────────────────────────────────────
     try:
