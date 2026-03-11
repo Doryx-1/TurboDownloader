@@ -1215,6 +1215,18 @@ class TurboDownloader(ctk.CTk):
                         except OSError:
                             pass
 
+                    if r.status_code == 416:
+                        # Server doesn't support range requests — restart from scratch
+                        print(f"[worker] 416 Range Not Satisfiable — retrying without resume")
+                        it.resume_from = 0
+                        it.downloaded  = 0
+                        try:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        except OSError:
+                            pass
+                        continue   # retry the loop without range header
+
                     if r.status_code not in (200, 206):
                         r.raise_for_status()
 
@@ -1513,7 +1525,16 @@ class TurboDownloader(ctk.CTk):
             popup_done = threading.Event()
 
             def open_popup():
-                default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
+                # ── Mode client : destination = chemin distant configuré ──────
+                is_remote_client = (
+                    self._remote_client is not None
+                    and self._remote_client.connected
+                )
+                if is_remote_client:
+                    default_dest = self._settings.get("remote_client_dest", "") \
+                                   or self._settings.get("default_dest", DEFAULT_DEST_DIR)
+                else:
+                    default_dest = self._settings.get("default_dest", DEFAULT_DEST_DIR)
 
                 http_confirmed  = []
                 ytdlp_confirmed = []
@@ -1530,15 +1551,34 @@ class TurboDownloader(ctk.CTk):
                     if not http_done.is_set() or not ytdlp_done.is_set():
                         return
                     all_confirmed = http_confirmed + ytdlp_confirmed
-                    if all_confirmed:
+                    if not all_confirmed:
+                        popup_done.set()
+                        return
+
+                    if is_remote_client:
+                        # ── Mode client : envoyer chaque URL au serveur distant ──
+                        for entry in all_confirmed:
+                            url  = entry[0]
+                            dest = entry[5] if len(entry) > 5 else default_dest
+                            result = self._remote_client.add_url(url, dest or None)
+                            if result is None:
+                                print(f"[remote-client] Failed to send URL: {url}")
+                            else:
+                                print(f"[remote-client] Sent to server: {url} → {dest}")
+                        popup_done.set()
+                    else:
+                        # ── Mode local : comportement normal ─────────────────────
                         self._launch_downloads(all_confirmed, workers,
                                                keep_tree=True,
                                                dest_override=default_dest)
-                    popup_done.set()
+                        popup_done.set()
 
                 def on_http_confirm(selected_files, dest_path="", kt=True):
+                    # dest_path vient de la popup (peut être modifié à la main)
+                    resolved_dest = dest_path or default_dest
                     http_confirmed.extend(
-                        (u, r, "http") for u, r, *_ in selected_files
+                        (u, r, "http", None, False, resolved_dest)
+                        for u, r, *_ in selected_files
                     )
                     http_done.set()
                     _try_launch()
