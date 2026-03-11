@@ -2,26 +2,14 @@
 remote_server.py — Remote control server/client for TurboDownloader.
 
 Architecture:
-  • Server mode : FastAPI HTTPS server (uvicorn) running in a daemon thread.
-                  Exposes a REST API + WebSocket feed so any authorised client
-                  (browser, script, or another TurboDownloader instance) can
-                  monitor and control downloads.
+  Server mode : FastAPI HTTPS server (uvicorn) in a daemon thread.
+  Client mode : httpx wrapper to talk to a remote server.
 
-  • Client mode : thin wrapper around httpx that talks to a remote server.
-                  Used by TurboDownloader when "Connect to remote" is enabled
-                  in settings.
+Security: HTTPS self-signed cert, bcrypt passwords, JWT HS256 tokens.
 
-Security:
-  • HTTPS with a self-signed certificate generated on first run
-    (stored in ~/.turbodownloader/ssl/).
-  • Login / password stored as a bcrypt hash in settings.json.
-  • Session tokens are signed JWT (HS256), expire after TOKEN_TTL_H hours.
-
-Dependencies (all optional — graceful fallback if missing):
-    pip install fastapi uvicorn[standard] python-jose[cryptography] bcrypt httpx
+NOTE: do NOT add 'from __future__ import annotations' —
+it breaks Pydantic v2 model resolution (ForwardRef issue with Python 3.14).
 """
-
-from __future__ import annotations
 
 import json
 import ssl
@@ -45,6 +33,25 @@ KEY_FILE   = SSL_DIR / "key.pem"
 
 TOKEN_TTL_H  = 24          # JWT validity in hours
 DEFAULT_PORT = 9988
+
+# ── Pydantic models — defined at module level (required for Pydantic v2 + Python 3.14) ──
+
+try:
+    from pydantic import BaseModel
+
+    class LoginRequest(BaseModel):
+        username: str
+        password: str
+        model_config = {"extra": "ignore"}
+
+    class AddURLRequest(BaseModel):
+        url: str
+        dest: Optional[str] = None
+        model_config = {"extra": "ignore"}
+
+except ImportError:
+    LoginRequest  = None   # type: ignore
+    AddURLRequest = None   # type: ignore
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 
@@ -287,7 +294,6 @@ class RemoteServer:
         from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Body
         from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
         from fastapi.middleware.cors import CORSMiddleware
-        from pydantic import BaseModel
 
         api = FastAPI(title="TurboDownloader Remote API", version="1.0")
 
@@ -298,7 +304,7 @@ class RemoteServer:
             allow_headers=["*"],
         )
 
-        bearer = HTTPBearer(auto_error=False)
+        bearer   = HTTPBearer(auto_error=False)
         settings = self._settings
         app_ref  = self._app_ref
 
@@ -308,20 +314,6 @@ class RemoteServer:
             if not credentials or not verify_token(credentials.credentials, settings):
                 raise HTTPException(status_code=401, detail="Invalid or expired token")
             return True
-
-        # ── Pydantic models ───────────────────────────────────────────────────
-
-        class LoginRequest(BaseModel):
-            username: str
-            password: str
-
-            model_config = {"extra": "ignore"}   # Pydantic v2 compat
-
-        class AddURLRequest(BaseModel):
-            url: str
-            dest: Optional[str] = None
-
-            model_config = {"extra": "ignore"}
 
         # ── Helper: serialise a DownloadItem for the API ──────────────────────
 
