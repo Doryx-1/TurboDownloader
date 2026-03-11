@@ -379,13 +379,29 @@ class RemoteServer:
 
         @api.post("/downloads/add")
         def add_download(req: AddURLRequest = Body(...), _ = Depends(require_auth)):
-            """Injects a URL exactly as if the user had pasted it."""
+            """
+            Injects a URL directly into the download queue — no popup, no UI interaction.
+            dest is the destination folder on the server machine.
+            """
             def _inject():
-                app_ref.url_box.delete("1.0", "end")
-                app_ref.url_box.insert("end", req.url)
-                app_ref._on_start()
+                try:
+                    workers = int(app_ref._settings.get("workers", 10))
+                except Exception:
+                    workers = 10
+
+                dest = req.dest or app_ref._settings.get("default_dest", "")
+                # (url, rel_dir, worker_type, format_id, audio_only, dest)
+                entry = (req.url, "", "http", None, False, dest)
+                app_ref._launch_downloads(
+                    [entry],
+                    workers=workers,
+                    keep_tree=False,
+                    dest_override=dest,
+                )
+                print(f"[remote-server] Queued: {req.url} → {dest}")
+
             app_ref.after(0, _inject)
-            return {"status": "queued", "url": req.url}
+            return {"status": "queued", "url": req.url, "dest": req.dest}
 
         @api.post("/downloads/{idx}/pause")
         def pause_download(idx: int, _ = Depends(require_auth)):
