@@ -284,7 +284,7 @@ class RemoteServer:
     # ---------------------------------------------------------------- FastAPI app
 
     def _build_fastapi_app(self):
-        from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Body
         from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
         from fastapi.middleware.cors import CORSMiddleware
         from pydantic import BaseModel
@@ -315,9 +315,13 @@ class RemoteServer:
             username: str
             password: str
 
+            model_config = {"extra": "ignore"}   # Pydantic v2 compat
+
         class AddURLRequest(BaseModel):
             url: str
             dest: Optional[str] = None
+
+            model_config = {"extra": "ignore"}
 
         # ── Helper: serialise a DownloadItem for the API ──────────────────────
 
@@ -346,11 +350,15 @@ class RemoteServer:
         # ── Endpoints ─────────────────────────────────────────────────────────
 
         @api.post("/auth/login")
-        def login(req: LoginRequest):
+        def login(req: LoginRequest = Body(...)):
             stored_user = settings.get("remote_username", "")
             stored_hash = settings.get("remote_password_hash", "")
+            print(f"[remote-server] Login attempt — received user: '{req.username}', stored user: '{stored_user}'")
+            print(f"[remote-server] Has password hash: {bool(stored_hash)}")
             if req.username != stored_user or not verify_password(req.password, stored_hash):
+                print(f"[remote-server] Auth FAILED")
                 raise HTTPException(status_code=401, detail="Bad credentials")
+            print(f"[remote-server] Auth OK")
             return {"token": create_token(settings), "expires_in_h": TOKEN_TTL_H}
 
         @api.get("/status")
@@ -378,7 +386,7 @@ class RemoteServer:
             return d
 
         @api.post("/downloads/add")
-        def add_download(req: AddURLRequest, _ = Depends(require_auth)):
+        def add_download(req: AddURLRequest = Body(...), _ = Depends(require_auth)):
             """Injects a URL exactly as if the user had pasted it."""
             def _inject():
                 app_ref.url_box.delete("1.0", "end")
@@ -489,19 +497,28 @@ class RemoteClient:
             return False, "httpx package missing"
 
         try:
+            print(f"[remote-client] Connecting to {self._base}/auth/login")
+            print(f"[remote-client] Username: '{self._user}', Password length: {len(self._pass)}")
             r = self._httpx.post(
                 f"{self._base}/auth/login",
                 json={"username": self._user, "password": self._pass},
-                verify=False,   # self-signed cert
+                headers={"Content-Type": "application/json"},
+                verify=False,
                 timeout=8,
             )
+            print(f"[remote-client] Status: {r.status_code}")
+            print(f"[remote-client] Response: {r.text}")
             if r.status_code == 200:
                 self._token   = r.json()["token"]
-                self._headers = {"Authorization": f"Bearer {self._token}"}
-                self._ok      = True
+                self._headers = {
+                    "Authorization": f"Bearer {self._token}",
+                    "Content-Type":  "application/json",
+                }
+                self._ok = True
                 return True, "Connected"
-            return False, f"Auth failed ({r.status_code}): {r.text[:100]}"
+            return False, f"Auth failed ({r.status_code}): {r.text[:200]}"
         except Exception as e:
+            print(f"[remote-client] Exception: {type(e).__name__}: {e}")
             return False, f"Connection error: {e}"
 
     @property
