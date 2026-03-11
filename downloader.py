@@ -25,6 +25,7 @@ from taskbar import TaskbarProgress
 import ytdlp_worker
 from ytdlp_popup import YtdlpPopup
 import ffmpeg_setup
+import remote_server
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
@@ -94,6 +95,11 @@ class TurboDownloader(ctk.CTk):
         # History des téléchargements
         self._history = HistoryManager()
 
+        # Remote control server (started if enabled in settings)
+        self._remote_server: remote_server.RemoteServer = None
+        self._remote_client = None   # RemoteClient instance when connected as client
+        self._start_remote_if_enabled()
+
         self._build_ui()
 
         # Windows taskbar — initialized after _build_ui (needs HWND)
@@ -101,6 +107,7 @@ class TurboDownloader(ctk.CTk):
         self._taskbar: TaskbarProgress = None
         self.after(500, self._init_taskbar)
         self.after(1000, self._check_dependencies)
+        self.after(600, self._update_remote_status_bar)   # refresh badge after UI ready
 
         self.after(80, self._process_ui_queue)
         self.after(1000, self._tick_global_speed)
@@ -119,6 +126,74 @@ class TurboDownloader(ctk.CTk):
         except Exception as e:
             print(f"[taskbar] init différée échouée: {e}")
             self._taskbar = TaskbarProgress(0)  # no-op fallback
+
+    # ---------------------------------------------------------------- Remote server
+
+    def _start_remote_if_enabled(self):
+        """Starts the remote control server if enabled in settings."""
+        if not self._settings.get("remote_enabled", False):
+            return
+        if not self._settings.get("remote_username") or not self._settings.get("remote_password_hash"):
+            print("[remote] Skipping start — username or password not configured")
+            return
+        self._remote_server = remote_server.RemoteServer(self, self._settings)
+        ok = self._remote_server.start()
+        if not ok:
+            self._remote_server = None
+
+    def _apply_remote_settings(self):
+        """
+        Called by on_settings_save — restarts the server if the enabled flag changed.
+        """
+        enabled = self._settings.get("remote_enabled", False)
+        running = self._remote_server is not None and self._remote_server.is_running
+
+        if enabled and not running:
+            self._start_remote_if_enabled()
+        elif not enabled and running:
+            self._remote_server.stop()
+            self._remote_server = None
+
+        self._update_remote_status_bar()
+
+    def _update_remote_status_bar(self):
+        """Shows/hides/updates the remote status badge in the sidebar."""
+        # Guard — bar may not exist yet during __init__
+        if not hasattr(self, "_remote_bar"):
+            return
+
+        srv_running = self._remote_server is not None and self._remote_server.is_running
+        cli_connected = self._remote_client is not None and self._remote_client.connected
+
+        if srv_running:
+            port = self._settings.get("remote_port", 9988)
+            self._remote_bar_lbl.configure(
+                text=f"📡  Server mode — listening on :{port}",
+                text_color="#7aaa7a")
+            self._remote_bar.configure(fg_color="#0d1f0d", border_color="#1a3a1a")
+            self._remote_bar.pack(fill="x", padx=16, pady=(0, 8))
+        elif cli_connected:
+            host = self._settings.get("remote_client_host", "?")
+            port = self._settings.get("remote_client_port", 9988)
+            self._remote_bar_lbl.configure(
+                text=f"🔗  Client mode — connected to {host}:{port}",
+                text_color="#7aaadd")
+            self._remote_bar.configure(fg_color="#0d0d1f", border_color="#1a1a3a")
+            self._remote_bar.pack(fill="x", padx=16, pady=(0, 8))
+        else:
+            self._remote_bar.pack_forget()
+
+    def _open_remote_control(self):
+        """Opens the Remote Control popup (connect to another instance)."""
+        remote_server.open_remote_control_popup(
+            master=self,
+            settings=self._settings,
+            on_add_url=lambda url: (
+                self.url_box.delete("1.0", "end"),
+                self.url_box.insert("end", url),
+                self._on_start(),
+            ),
+        )
 
     def _check_dependencies(self):
         """Checks ffmpeg and Node.js availability. Installs Node if missing."""
@@ -223,8 +298,18 @@ class TurboDownloader(ctk.CTk):
             text_color="#555555", font=ctk.CTkFont(size=11))
         self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 10))
 
-        # ── Bas sidebar : Clear + Settings + History ──────────────────────────
+        # ── Remote status bar ─────────────────────────────────────────────────
+        # Visible seulement quand le serveur tourne OU qu'un client est connecté
+        self._remote_bar = ctk.CTkFrame(sidebar, fg_color="#0d1f0d",
+                                        corner_radius=6, border_width=1,
+                                        border_color="#1a3a1a")
+        self._remote_bar_lbl = ctk.CTkLabel(
+            self._remote_bar, text="", anchor="w",
+            font=ctk.CTkFont(size=10), text_color="#7aaa7a")
+        self._remote_bar_lbl.pack(fill="x", padx=10, pady=5)
+        # Démarré masqué — affiché par _update_remote_status_bar()
 
+        # ── Bas sidebar : Clear + Settings + History + Remote ────────────────
 
         bot_btns = ctk.CTkFrame(sidebar, fg_color="transparent")
         bot_btns.pack(side="bottom", fill="x", padx=16, pady=(0, 4))
@@ -237,7 +322,12 @@ class TurboDownloader(ctk.CTk):
                       fg_color="transparent", border_width=1, border_color="#333333",
                       font=ctk.CTkFont(size=12),
                       command=self._open_history).pack(side="left", expand=True,
-                                                       fill="x", padx=(4, 0))
+                                                       fill="x", padx=(4, 4))
+        ctk.CTkButton(bot_btns, text="📡 Remote", height=30,
+                      fg_color="transparent", border_width=1, border_color="#333333",
+                      font=ctk.CTkFont(size=12),
+                      command=self._open_remote_control).pack(side="left", expand=True,
+                                                              fill="x", padx=(0, 0))
 
         ctk.CTkLabel(sidebar, text="© Thomas PIERRE",
                      font=ctk.CTkFont(size=10), text_color="#333333").pack(
@@ -417,6 +507,8 @@ class TurboDownloader(ctk.CTk):
         def on_save():
             # Update the existing dict in place (no reference reassignment)
             self._settings.update(load_settings())
+            # Apply remote server changes (start/stop as needed)
+            self._apply_remote_settings()
         SettingsPopup(self, self._settings, on_save)
 
     def _open_history(self):

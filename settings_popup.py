@@ -42,6 +42,16 @@ def load_settings() -> dict:
         "segments":      4,
         "extensions":    DEFAULT_EXTENSIONS.copy(),
         "all_files":     False,
+        # ── Remote control ─────────────────────
+        "remote_enabled":       False,
+        "remote_port":          9988,
+        "remote_username":      "",
+        "remote_password_hash": "",
+        "remote_jwt_secret":    "",
+        # client-side connection info
+        "remote_client_host":   "",
+        "remote_client_port":   9988,
+        "remote_client_user":   "",
     }
     if CONFIG_FILE.exists():
         try:
@@ -73,7 +83,7 @@ class SettingsPopup(ctk.CTkToplevel):
     def __init__(self, master, settings: dict, on_save):
         super().__init__(master)
         self.title("Settings")
-        self.geometry("620x840")
+        self.geometry("620x960")
         self.resizable(False, False)
         self.grab_set()
 
@@ -273,13 +283,22 @@ class SettingsPopup(ctk.CTkToplevel):
                       command=self._add_custom_ext).pack(side="left")
 
         # Frame for dynamically added custom extension checkboxes
+        # No fixed height — grows only when extensions are actually added
         self._custom_ext_frame = ctk.CTkFrame(content, fg_color="transparent")
-        self._custom_ext_frame.pack(fill="x", padx=20, pady=(2, 8))
+        self._custom_ext_frame.pack(fill="x", padx=20, pady=0)
 
         # Load already saved custom extensions (not in predefined list)
+        _has_custom = False
         for ext, enabled in saved_exts.items():
             if ext not in DEFAULT_EXTENSIONS:
                 self._add_custom_ext_row(ext, enabled)
+                _has_custom = True
+        # Only add bottom padding if there are custom ext rows
+        if _has_custom:
+            self._custom_ext_frame.pack_configure(pady=(0, 6))
+
+        # ── Section: Remote control ──────────────────────────────────────
+        self._build_remote_section(content)
 
         # ── Bottom buttons (inside bot frame) ───────────────────────────
         ctk.CTkButton(bot, text="Cancel", width=110, fg_color="#5a5a5a",
@@ -296,6 +315,289 @@ class SettingsPopup(ctk.CTkToplevel):
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(
                          anchor="w", padx=20, pady=(0, 6))
 
+    # ================================================================ Remote
+
+    def _build_remote_section(self, content):
+        """Builds the Remote Control section inside the settings scrollable frame."""
+        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+
+        # ── Sub-section : Server ──────────────────────────────────────────────
+        self._section(content, "Remote control — Server",
+                      "Allow another TurboDownloader instance to monitor and control "
+                      "downloads on this machine over HTTPS.")
+
+        # Enable / disable toggle
+        row_ena = ctk.CTkFrame(content, fg_color="transparent")
+        row_ena.pack(fill="x", padx=20, pady=(0, 6))
+
+        self._remote_enabled_var = ctk.BooleanVar(
+            value=self._settings.get("remote_enabled", False))
+        ctk.CTkSwitch(row_ena, text="Enable remote server",
+                      variable=self._remote_enabled_var,
+                      command=self._on_remote_toggle).pack(side="left")
+
+        self._remote_status_lbl = ctk.CTkLabel(
+            row_ena, text="", font=ctk.CTkFont(size=11))
+        self._remote_status_lbl.pack(side="right")
+
+        # Collapsible server config — wrapped in a fixed placeholder so that
+        # pack order is preserved when the frame is shown/hidden.
+        self._remote_cfg_wrapper = ctk.CTkFrame(content, fg_color="transparent")
+        self._remote_cfg_wrapper.pack(fill="x", padx=0, pady=0)
+
+        self._remote_cfg = ctk.CTkFrame(self._remote_cfg_wrapper, fg_color="#1e1e1e", corner_radius=8)
+        if self._remote_enabled_var.get():
+            self._remote_cfg.pack(fill="x", padx=20, pady=(0, 8))
+        self._populate_remote_cfg()
+        self._refresh_remote_badge()
+
+        # ── Separator ─────────────────────────────────────────────────────────
+        ctk.CTkFrame(content, height=1, fg_color="#2a2a2a").pack(fill="x", padx=20, pady=(6, 0))
+
+        # ── Sub-section : Client ──────────────────────────────────────────────
+        self._section(content, "Remote control — Client",
+                      "Connect this instance to a remote TurboDownloader server.\n"
+                      "When connected, downloads are sent to and run on the remote machine.")
+
+        client_frame = ctk.CTkFrame(content, fg_color="#1e1e1e", corner_radius=8)
+        client_frame.pack(fill="x", padx=20, pady=(0, 12))
+
+        # Host
+        rc = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(rc, text="Host / IP:", width=130, anchor="w").pack(side="left")
+        self._rclient_host_e = ctk.CTkEntry(rc, width=180,
+                                            placeholder_text="192.168.1.x or hostname")
+        self._rclient_host_e.insert(0, self._settings.get("remote_client_host", ""))
+        self._rclient_host_e.pack(side="left")
+
+        # Port
+        rc2 = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc2.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(rc2, text="Port:", width=130, anchor="w").pack(side="left")
+        self._rclient_port_e = ctk.CTkEntry(rc2, width=80)
+        self._rclient_port_e.insert(0, str(self._settings.get("remote_client_port", 9988)))
+        self._rclient_port_e.pack(side="left")
+
+        # Username
+        rc3 = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc3.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(rc3, text="Username:", width=130, anchor="w").pack(side="left")
+        self._rclient_user_e = ctk.CTkEntry(rc3, width=180)
+        self._rclient_user_e.insert(0, self._settings.get("remote_client_user", ""))
+        self._rclient_user_e.pack(side="left")
+
+        # Password (never stored — entered each time for security)
+        rc4 = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc4.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(rc4, text="Password:", width=130, anchor="w").pack(side="left")
+        self._rclient_pass_e = ctk.CTkEntry(rc4, width=180, show="•",
+                                            placeholder_text="Not saved — enter each time")
+        self._rclient_pass_e.pack(side="left")
+
+        # Default remote destination
+        rc5 = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc5.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(rc5, text="Remote dest.:", width=130, anchor="w").pack(side="left")
+        self._rclient_dest_e = ctk.CTkEntry(rc5, width=220,
+                                            placeholder_text="e.g. D:\\Medias  (path on remote PC)")
+        self._rclient_dest_e.insert(0, self._settings.get("remote_client_dest", ""))
+        self._rclient_dest_e.pack(side="left")
+
+        # Info box about remote dest behaviour
+        info = ctk.CTkFrame(client_frame, fg_color="#1a2a1a", corner_radius=4)
+        info.pack(fill="x", padx=14, pady=(2, 4))
+        ctk.CTkLabel(info,
+                     text="ℹ  The destination path is resolved on the remote machine.\n"
+                          "   Leave blank to use the remote server's default folder.\n"
+                          "   Browse (local) cannot navigate remote folders.",
+                     text_color="#7aaa7a", font=ctk.CTkFont(size=10),
+                     justify="left").pack(padx=10, pady=6, anchor="w")
+
+        # Connect / Disconnect button row
+        rc6 = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc6.pack(fill="x", padx=14, pady=(4, 10))
+
+        self._rclient_status_lbl = ctk.CTkLabel(
+            rc6, text="⚫ Not connected", text_color="#888888",
+            font=ctk.CTkFont(size=11))
+        self._rclient_status_lbl.pack(side="left")
+
+        self._rclient_btn = ctk.CTkButton(
+            rc6, text="Connect", width=110, fg_color="#1f6aa5",
+            command=self._toggle_remote_client)
+        self._rclient_btn.pack(side="right")
+        self._refresh_client_badge()
+
+    def _populate_remote_cfg(self):
+        """Fills the collapsible remote config frame."""
+        p = self._remote_cfg
+
+        # Port
+        r = ctk.CTkFrame(p, fg_color="transparent")
+        r.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(r, text="Port:", width=130, anchor="w").pack(side="left")
+        self._remote_port_e = ctk.CTkEntry(r, width=80)
+        self._remote_port_e.insert(0, str(self._settings.get("remote_port", 9988)))
+        self._remote_port_e.pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(r, text="(restart needed to change port)",
+                     text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left")
+
+        # Username
+        r2 = ctk.CTkFrame(p, fg_color="transparent")
+        r2.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(r2, text="Username:", width=130, anchor="w").pack(side="left")
+        self._remote_user_e = ctk.CTkEntry(r2, width=180)
+        self._remote_user_e.insert(0, self._settings.get("remote_username", ""))
+        self._remote_user_e.pack(side="left")
+
+        # Password
+        r3 = ctk.CTkFrame(p, fg_color="transparent")
+        r3.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(r3, text="New password:", width=130, anchor="w").pack(side="left")
+        self._remote_pass_e = ctk.CTkEntry(r3, width=180, show="•",
+                                           placeholder_text="Leave blank to keep current")
+        self._remote_pass_e.pack(side="left")
+        has_pwd = bool(self._settings.get("remote_password_hash"))
+        ctk.CTkLabel(r3,
+                     text="✓ Password set" if has_pwd else "⚠ No password set",
+                     text_color="#2e8b57" if has_pwd else "#f0a500",
+                     font=ctk.CTkFont(size=10)).pack(side="left", padx=(8, 0))
+
+        # SSL cert
+        r4 = ctk.CTkFrame(p, fg_color="transparent")
+        r4.pack(fill="x", padx=14, pady=(0, 4))
+        self._ssl_row = r4
+        self._render_ssl_row()
+
+        # Missing deps warning
+        try:
+            from remote_server import DEPS_OK, DEPS_MISSING
+            if not DEPS_OK:
+                warn = ctk.CTkFrame(p, fg_color="#2a1800", corner_radius=4)
+                warn.pack(fill="x", padx=14, pady=(4, 0))
+                ctk.CTkLabel(warn,
+                             text=f"⚠  Missing packages:\n"
+                                  f"pip install {chr(32).join(DEPS_MISSING)}",
+                             text_color="#f0a500",
+                             font=ctk.CTkFont(size=11),
+                             justify="left").pack(padx=10, pady=6, anchor="w")
+        except ImportError:
+            pass
+
+        ctk.CTkFrame(p, height=10, fg_color="transparent").pack()
+
+    def _render_ssl_row(self):
+        for w in self._ssl_row.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(self._ssl_row, text="SSL cert:", width=130, anchor="w").pack(side="left")
+        try:
+            from remote_server import CERT_FILE, KEY_FILE
+            exists = CERT_FILE.exists() and KEY_FILE.exists()
+            txt    = f"✓ {CERT_FILE}" if exists else "⚠ Not yet generated"
+            color  = "#2e8b57" if exists else "#f0a500"
+            ctk.CTkLabel(self._ssl_row, text=txt, text_color=color,
+                         font=ctk.CTkFont(size=10), wraplength=300,
+                         anchor="w").pack(side="left")
+            if not exists:
+                ctk.CTkButton(self._ssl_row, text="Generate now", width=120,
+                              fg_color="#1f6aa5",
+                              command=self._gen_cert).pack(side="left", padx=(8, 0))
+        except ImportError:
+            ctk.CTkLabel(self._ssl_row, text="remote_server.py not found",
+                         text_color="#cc4444",
+                         font=ctk.CTkFont(size=10)).pack(side="left")
+
+    def _gen_cert(self):
+        from remote_server import ensure_ssl_cert
+        ensure_ssl_cert()
+        self._render_ssl_row()
+
+    def _on_remote_toggle(self):
+        if self._remote_enabled_var.get():
+            self._remote_cfg.pack(fill="x", padx=20, pady=(0, 8))
+        else:
+            self._remote_cfg.pack_forget()
+        self._refresh_remote_badge()
+
+    def _refresh_remote_badge(self):
+        if not self._remote_enabled_var.get():
+            self._remote_status_lbl.configure(text="", text_color="gray")
+            return
+        srv = getattr(self.master, "_remote_server", None)
+        if srv and srv.is_running:
+            port = self._settings.get("remote_port", 9988)
+            self._remote_status_lbl.configure(
+                text=f"🟢 Running on :{port}", text_color="#2e8b57")
+        else:
+            self._remote_status_lbl.configure(
+                text="⚫ Not running", text_color="#888888")
+
+    def _refresh_client_badge(self):
+        """Updates the client connection status badge."""
+        client = getattr(self.master, "_remote_client", None)
+        if client and client.connected:
+            host = self._settings.get("remote_client_host", "?")
+            port = self._settings.get("remote_client_port", 9988)
+            self._rclient_status_lbl.configure(
+                text=f"🟢 Connected to {host}:{port}", text_color="#2e8b57")
+            self._rclient_btn.configure(text="Disconnect", fg_color="#5a5a5a")
+        else:
+            self._rclient_status_lbl.configure(
+                text="⚫ Not connected", text_color="#888888")
+            self._rclient_btn.configure(text="Connect", fg_color="#1f6aa5")
+
+    def _toggle_remote_client(self):
+        """Connect or disconnect the remote client from this settings window."""
+        client = getattr(self.master, "_remote_client", None)
+
+        # — Disconnect —
+        if client and client.connected:
+            self.master._remote_client = None
+            self.master._update_remote_status_bar()
+            self._refresh_client_badge()
+            return
+
+        # — Connect —
+        host = self._rclient_host_e.get().strip()
+        pwd  = self._rclient_pass_e.get()
+        try:
+            port = int(self._rclient_port_e.get().strip() or "9988")
+        except ValueError:
+            port = 9988
+        user = self._rclient_user_e.get().strip()
+
+        if not host or not user or not pwd:
+            self._rclient_status_lbl.configure(
+                text="⚠ Host, username and password required", text_color="#f0a500")
+            return
+
+        self._rclient_status_lbl.configure(
+            text="⏳ Connecting…", text_color="#888888")
+        self.update()
+
+        try:
+            from remote_server import RemoteClient
+            c = RemoteClient(host, port, user, pwd)
+            ok, msg = c.connect()
+        except ImportError:
+            self._rclient_status_lbl.configure(
+                text="✗ remote_server.py not found", text_color="#cc4444")
+            return
+
+        if ok:
+            # Save non-sensitive fields
+            self._settings["remote_client_host"] = host
+            self._settings["remote_client_port"] = port
+            self._settings["remote_client_user"] = user
+            self._settings["remote_client_dest"] = self._rclient_dest_e.get().strip()
+            self.master._remote_client = c
+            self.master._update_remote_status_bar()
+            self._refresh_client_badge()
+        else:
+            self._rclient_status_lbl.configure(
+                text=f"✗ {msg[:60]}", text_color="#cc4444")
+
     def _on_seg_slider(self, val):
         n = int(round(val))
         self._seg_val_lbl.configure(
@@ -310,6 +612,7 @@ class SettingsPopup(ctk.CTkToplevel):
         if ext in self._ext_vars:
             return  # déjà présente
         self._add_custom_ext_row(ext, True)
+        self._custom_ext_frame.pack_configure(pady=(0, 6))  # ajoute l'espace une fois qu'il y a du contenu
         self._custom_ext_entry.delete(0, "end")
 
     def _add_custom_ext_row(self, ext: str, enabled: bool):
@@ -326,6 +629,9 @@ class SettingsPopup(ctk.CTkToplevel):
     def _remove_custom_ext(self, ext: str, row_frame):
         self._ext_vars.pop(ext, None)
         row_frame.destroy()
+        # Si plus aucune ext custom, supprimer le padding résiduel
+        if not self._custom_ext_frame.winfo_children():
+            self._custom_ext_frame.pack_configure(pady=0)
 
     def _browse_dest(self):
         folder = filedialog.askdirectory(title="Choose default destination folder")
@@ -394,6 +700,38 @@ class SettingsPopup(ctk.CTkToplevel):
 
         # All files mode
         self._settings["all_files"] = self._all_files_var.get()
+
+        # ── Remote control ─────────────────────────────────────────────
+        self._settings["remote_enabled"] = self._remote_enabled_var.get()
+        try:
+            port = int(self._remote_port_e.get().strip() or "9988")
+            self._settings["remote_port"] = max(1024, min(65535, port))
+        except (ValueError, AttributeError):
+            self._settings["remote_port"] = 9988
+
+        user = getattr(self, "_remote_user_e", None)
+        if user:
+            self._settings["remote_username"] = user.get().strip()
+
+        pwd_raw = getattr(self, "_remote_pass_e", None)
+        if pwd_raw:
+            pwd = pwd_raw.get()
+            if pwd:   # blank = keep existing hash
+                from remote_server import hash_password
+                self._settings["remote_password_hash"] = hash_password(pwd)
+
+        # ── Remote client ───────────────────────────────────────────────
+        if getattr(self, "_rclient_host_e", None):
+            self._settings["remote_client_host"] = self._rclient_host_e.get().strip()
+        if getattr(self, "_rclient_user_e", None):
+            self._settings["remote_client_user"] = self._rclient_user_e.get().strip()
+        if getattr(self, "_rclient_dest_e", None):
+            self._settings["remote_client_dest"] = self._rclient_dest_e.get().strip()
+        try:
+            self._settings["remote_client_port"] = int(
+                self._rclient_port_e.get().strip() or "9988")
+        except (ValueError, AttributeError):
+            pass
 
         save_settings(self._settings)
         self._on_save()

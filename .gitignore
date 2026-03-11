@@ -37,3 +37,5 @@ settings.local.*
 
 # Autres
 *.spec
+ffmpeg.exe
+pyinstaller.txt
