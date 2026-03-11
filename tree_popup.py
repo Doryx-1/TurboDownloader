@@ -47,11 +47,13 @@ class FileTreeNode:
 class FileTreePopup(ctk.CTkToplevel):
     """Popup de sélection — liste PLATE in le scroll (pas de frames imbriqués)."""
 
-    def __init__(self, master, files: list, on_confirm, default_dest: str = "", keep_tree: bool = True):
+    def __init__(self, master, files: list, on_confirm, default_dest: str = "",
+                 keep_tree: bool = True, recent_dests: list = None):
         """
         files        : list of (file_url, rel_dir) returned by get_all_files
         on_confirm   : callback(selected_files: list[(url, rel_dir)], dest_path: str)
         default_dest : pre-filled destination path from settings
+        recent_dests : list of recently used destination paths
         """
         super().__init__(master)
         self.title("Select files to download")
@@ -63,6 +65,7 @@ class FileTreePopup(ctk.CTkToplevel):
         self._on_confirm   = on_confirm
         self._default_dest = default_dest
         self._keep_tree    = keep_tree
+        self._recent_dests = [d for d in (recent_dests or []) if d and d != default_dest]
         self._root_nodes: list[FileTreeNode] = []
         self._all_nodes:  list[FileTreeNode] = []   # ordre DFS complet
         self._all_file_nodes: list[FileTreeNode] = []
@@ -206,7 +209,14 @@ class FileTreePopup(ctk.CTkToplevel):
         self._dest_entry = ctk.CTkEntry(dest_bar, placeholder_text="Choose a folder…")
         if self._default_dest:
             self._dest_entry.insert(0, self._default_dest)
-        self._dest_entry.pack(side="left", expand=True, fill="x", padx=(0, 8), pady=10)
+        self._dest_entry.pack(side="left", expand=True, fill="x", padx=(0, 4), pady=10)
+
+        # History dropdown — only shown if there are recent destinations
+        if self._recent_dests:
+            ctk.CTkButton(dest_bar, text="▾", width=30,
+                          fg_color="#2a2a2a", hover_color="#3a3a3a",
+                          font=ctk.CTkFont(size=14),
+                          command=self._show_dest_history).pack(side="left", padx=(0, 4), pady=10)
 
         ctk.CTkButton(dest_bar, text="Browse…", width=90,
                       command=self._browse_dest).pack(side="left", padx=(0, 14), pady=10)
@@ -497,6 +507,43 @@ class FileTreePopup(ctk.CTkToplevel):
         if folder:
             self._dest_entry.delete(0, "end")
             self._dest_entry.insert(0, folder)
+
+    def _show_dest_history(self):
+        """Shows a dropdown menu of recently used destination folders."""
+        if not self._recent_dests:
+            return
+
+        menu = ctk.CTkToplevel(self)
+        menu.overrideredirect(True)
+        menu.attributes("-topmost", True)
+
+        # Position under the entry widget
+        x = self._dest_entry.winfo_rootx()
+        y = self._dest_entry.winfo_rooty() + self._dest_entry.winfo_height()
+        w = self._dest_entry.winfo_width() + 34  # include ▾ button
+        menu.geometry(f"{w}x{min(len(self._recent_dests) * 36, 220)}+{x}+{y}")
+        menu.grab_set()
+
+        scroll = ctk.CTkScrollableFrame(menu, fg_color="#1e1e1e")
+        scroll.pack(fill="both", expand=True)
+
+        def _pick(path):
+            self._dest_entry.delete(0, "end")
+            self._dest_entry.insert(0, path)
+            menu.destroy()
+
+        for path in self._recent_dests:
+            display = path if len(path) <= 55 else "…" + path[-52:]
+            ctk.CTkButton(
+                scroll, text=display, anchor="w",
+                fg_color="transparent", hover_color="#2a3a4a",
+                text_color="#cccccc", font=ctk.CTkFont(size=11),
+                height=30,
+                command=lambda p=path: _pick(p),
+            ).pack(fill="x", padx=2, pady=1)
+
+        # Close if clicked outside
+        menu.bind("<FocusOut>", lambda e: menu.destroy() if menu.winfo_exists() else None)
 
     def _cancel(self):
         """Close without selection — unblocks popup_done."""

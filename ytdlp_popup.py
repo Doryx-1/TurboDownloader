@@ -61,7 +61,8 @@ class YtdlpPopup(ctk.CTkToplevel):
     default_dest  : default destination folder string
     """
 
-    def __init__(self, master, urls: list[str], on_confirm, default_dest: str = ""):
+    def __init__(self, master, urls: list[str], on_confirm, default_dest: str = "",
+                 recent_dests: list = None):
         super().__init__(master)
         self.title("Video Quality Selection")
         self.geometry("820x700")
@@ -71,6 +72,7 @@ class YtdlpPopup(ctk.CTkToplevel):
         self._urls         = urls
         self._on_confirm   = on_confirm
         self._default_dest = default_dest
+        self._recent_dests = [d for d in (recent_dests or []) if d and d != default_dest]
         self._canceled     = False
 
         # Fetched metadata per URL: None=pending, False=failed, dict=ok
@@ -150,6 +152,12 @@ class YtdlpPopup(ctk.CTkToplevel):
         if self._default_dest:
             self._dest_entry.insert(0, self._default_dest)
         self._dest_entry.pack(side="left", padx=(16, 4), pady=12)
+
+        if self._recent_dests:
+            ctk.CTkButton(bot, text="▾", width=30,
+                          fg_color="#2a2a2a", hover_color="#3a3a3a",
+                          font=ctk.CTkFont(size=14),
+                          command=self._show_dest_history).pack(side="left", padx=(0, 4), pady=12)
 
         ctk.CTkButton(bot, text="Browse…", width=90,
                       fg_color="transparent", border_width=1,
@@ -399,6 +407,38 @@ class YtdlpPopup(ctk.CTkToplevel):
         if folder:
             self._dest_entry.delete(0, "end")
             self._dest_entry.insert(0, folder)
+
+    def _show_dest_history(self):
+        """Shows a dropdown of recently used destination folders."""
+        if not self._recent_dests:
+            return
+        import customtkinter as _ctk
+        menu = _ctk.CTkToplevel(self)
+        menu.overrideredirect(True)
+        menu.attributes("-topmost", True)
+        x = self._dest_entry.winfo_rootx()
+        y = self._dest_entry.winfo_rooty() + self._dest_entry.winfo_height()
+        w = self._dest_entry.winfo_width() + 34
+        menu.geometry(f"{w}x{min(len(self._recent_dests) * 36, 220)}+{x}+{y}")
+        menu.grab_set()
+        scroll = _ctk.CTkScrollableFrame(menu, fg_color="#1e1e1e")
+        scroll.pack(fill="both", expand=True)
+
+        def _pick(path):
+            self._dest_entry.delete(0, "end")
+            self._dest_entry.insert(0, path)
+            menu.destroy()
+
+        for path in self._recent_dests:
+            display = path if len(path) <= 55 else "…" + path[-52:]
+            _ctk.CTkButton(
+                scroll, text=display, anchor="w",
+                fg_color="transparent", hover_color="#2a3a4a",
+                text_color="#cccccc", font=_ctk.CTkFont(size=11),
+                height=30,
+                command=lambda p=path: _pick(p),
+            ).pack(fill="x", padx=2, pady=1)
+        menu.bind("<FocusOut>", lambda e: menu.destroy() if menu.winfo_exists() else None)
 
     def _cancel(self):
         if self._canceled:

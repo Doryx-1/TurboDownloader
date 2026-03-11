@@ -129,6 +129,19 @@ class TurboDownloader(ctk.CTk):
 
     # ---------------------------------------------------------------- Remote server
 
+    def _record_dest_history(self, dest: str):
+        """Adds a destination folder to the recent history (max 10, no duplicates)."""
+        if not dest:
+            return
+        history = self._settings.get("dest_history", [])
+        if dest in history:
+            history.remove(dest)
+        history.insert(0, dest)
+        self._settings["dest_history"] = history[:10]
+        # Persist immediately (lightweight — just the history key)
+        from settings_popup import save_settings
+        save_settings(self._settings)
+
     def _start_remote_if_enabled(self):
         """Starts the remote control server if enabled in settings."""
         if not self._settings.get("remote_enabled", False):
@@ -573,13 +586,19 @@ class TurboDownloader(ctk.CTk):
     # ----------------------------------------------------------------- Gestion des rows
 
     def _add_row_for_item(self, idx: int, item: DownloadItem):
+        display_name = item.filename
+        if getattr(item, "from_remote", False):
+            display_name = f"📡 {item.filename}"
         row = DownloadRow(
-            self.scroll, item.filename,
+            self.scroll, display_name,
             on_pause=lambda i=idx:    self.pause_one(i),
             on_cancel=lambda i=idx:   self.cancel_one(i),
             on_remove=lambda i=idx:   self.remove_one(i),
             on_priority=lambda i=idx: self.priority_one(i),
         )
+        if getattr(item, "from_remote", False):
+            row.frame.configure(border_color="#1a3a5a")
+            row.name_lbl.configure(text_color="#7ab8e8")
         self.rows[idx] = row
         self._apply_filter_to_row(idx)
 
@@ -1692,6 +1711,7 @@ class TurboDownloader(ctk.CTk):
                 def on_http_confirm(selected_files, dest_path="", kt=True):
                     # dest_path vient de la popup (peut être modifié à la main)
                     resolved_dest = dest_path or default_dest
+                    self._record_dest_history(resolved_dest)
                     http_confirmed.extend(
                         (u, r, "http", None, False, resolved_dest)
                         for u, r, *_ in selected_files
@@ -1701,22 +1721,28 @@ class TurboDownloader(ctk.CTk):
 
                 def on_ytdlp_confirm(items: list):
                     for item in items:
+                        dest = item.get("dest", default_dest)
+                        self._record_dest_history(dest)
                         ytdlp_confirmed.append((item["url"], "", "ytdlp",
                                                 item["format_id"],
                                                 item["audio_only"],
-                                                item.get("dest", default_dest)))
+                                                dest))
                     ytdlp_done.set()
                     _try_launch()
+
+                recent_dests = self._settings.get("dest_history", [])
 
                 if unique_http:
                     # FileTreePopup expects (url, rel_dir) tuples — strip the "http" tag
                     http_pairs = [(u, r) for u, r, *_ in unique_http]
                     FileTreePopup(self, http_pairs, on_http_confirm,
-                                  default_dest=default_dest, keep_tree=keep_tree)
+                                  default_dest=default_dest, keep_tree=keep_tree,
+                                  recent_dests=recent_dests)
                 if unique_ytdlp:
                     ytdlp_urls = [u for u, _, __ in unique_ytdlp]
                     YtdlpPopup(self, ytdlp_urls, on_ytdlp_confirm,
-                               default_dest=default_dest)
+                               default_dest=default_dest,
+                               recent_dests=recent_dests)
 
                 # Edge case: nothing to show
                 if not unique_http and not unique_ytdlp:
@@ -1773,6 +1799,7 @@ class TurboDownloader(ctk.CTk):
             format_id  = entry[3] if len(entry) > 3 else None
             audio_only = entry[4] if len(entry) > 4 else False
             entry_dest = entry[5] if len(entry) > 5 else ""
+            from_remote = entry[6] if len(entry) > 6 else False
 
             effective_base = entry_dest or base
             name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
@@ -1810,6 +1837,7 @@ class TurboDownloader(ctk.CTk):
                 it.worker_type   = wtype
                 it.yt_format_id  = format_id   # type: ignore[attr-defined]
                 it.yt_audio_only = audio_only  # type: ignore[attr-defined]
+                it.from_remote   = from_remote # type: ignore[attr-defined]
                 return (existing_idx, it, True)   # True = reuse
             else:
                 idx = self._next_idx
@@ -1819,6 +1847,7 @@ class TurboDownloader(ctk.CTk):
                 it.worker_type   = wtype        # type: ignore[attr-defined]
                 it.yt_format_id  = format_id    # type: ignore[attr-defined]
                 it.yt_audio_only = audio_only   # type: ignore[attr-defined]
+                it.from_remote   = from_remote  # type: ignore[attr-defined]
                 self.items[idx]  = it
                 return (idx, it, False)          # False = new
 

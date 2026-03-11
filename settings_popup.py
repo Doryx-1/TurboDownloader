@@ -52,6 +52,8 @@ def load_settings() -> dict:
         "remote_client_host":   "",
         "remote_client_port":   9988,
         "remote_client_user":   "",
+        # destination history
+        "dest_history":         [],
     }
     if CONFIG_FILE.exists():
         try:
@@ -399,10 +401,15 @@ class SettingsPopup(ctk.CTkToplevel):
         rc5 = ctk.CTkFrame(client_frame, fg_color="transparent")
         rc5.pack(fill="x", padx=14, pady=(0, 4))
         ctk.CTkLabel(rc5, text="Remote dest.:", width=130, anchor="w").pack(side="left")
-        self._rclient_dest_e = ctk.CTkEntry(rc5, width=220,
+        self._rclient_dest_e = ctk.CTkEntry(rc5, width=180,
                                             placeholder_text="e.g. D:\\Medias  (path on remote PC)")
         self._rclient_dest_e.insert(0, self._settings.get("remote_client_dest", ""))
         self._rclient_dest_e.pack(side="left")
+        self._rclient_browse_btn = ctk.CTkButton(
+            rc5, text="📂 Browse…", width=100,
+            command=self._browse_remote_dest,
+            state="disabled")
+        self._rclient_browse_btn.pack(side="left", padx=(6, 0))
 
         # Info box about remote dest behaviour
         info = ctk.CTkFrame(client_frame, fg_color="#1a2a1a", corner_radius=4)
@@ -410,7 +417,7 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(info,
                      text="ℹ  The destination path is resolved on the remote machine.\n"
                           "   Leave blank to use the remote server's default folder.\n"
-                          "   Browse (local) cannot navigate remote folders.",
+                          "   📂 Browse is available once connected.",
                      text_color="#7aaa7a", font=ctk.CTkFont(size=10),
                      justify="left").pack(padx=10, pady=6, anchor="w")
 
@@ -536,7 +543,8 @@ class SettingsPopup(ctk.CTkToplevel):
     def _refresh_client_badge(self):
         """Updates the client connection status badge."""
         client = getattr(self.master, "_remote_client", None)
-        if client and client.connected:
+        connected = client and client.connected
+        if connected:
             host = self._settings.get("remote_client_host", "?")
             port = self._settings.get("remote_client_port", 9988)
             self._rclient_status_lbl.configure(
@@ -546,6 +554,10 @@ class SettingsPopup(ctk.CTkToplevel):
             self._rclient_status_lbl.configure(
                 text="⚫ Not connected", text_color="#888888")
             self._rclient_btn.configure(text="Connect", fg_color="#1f6aa5")
+        # Browse remote button — only active when connected
+        if hasattr(self, "_rclient_browse_btn"):
+            self._rclient_browse_btn.configure(
+                state="normal" if connected else "disabled")
 
     def _toggle_remote_client(self):
         """Connect or disconnect the remote client from this settings window."""
@@ -638,6 +650,16 @@ class SettingsPopup(ctk.CTkToplevel):
         if folder:
             self._dest_entry.delete(0, "end")
             self._dest_entry.insert(0, folder)
+
+    def _browse_remote_dest(self):
+        """Opens a remote file browser to pick a folder on the server."""
+        client = getattr(self.master, "_remote_client", None)
+        if not client or not client.connected:
+            return
+        _RemoteBrowsePopup(self, client, callback=lambda path: (
+            self._rclient_dest_e.delete(0, "end"),
+            self._rclient_dest_e.insert(0, path)
+        ))
 
     def _reset_dest(self):
         self._dest_entry.delete(0, "end")
@@ -736,3 +758,104 @@ class SettingsPopup(ctk.CTkToplevel):
         save_settings(self._settings)
         self._on_save()
         self.destroy()
+
+# ─────────────────────────────────────────────────────────────── Remote Browser
+
+class _RemoteBrowsePopup(ctk.CTkToplevel):
+    """
+    Modal file browser that navigates the remote server's filesystem via /browse.
+    """
+    def __init__(self, master, client, callback):
+        super().__init__(master)
+        self.title("Browse remote server")
+        self.geometry("520x460")
+        self.resizable(True, True)
+        self.grab_set()
+
+        self._client   = client
+        self._callback = callback
+        self._current  = ""   # current path on server ("" = root/drives)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(hdr, text="📂 Remote Filesystem",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+
+        # Current path label
+        self._path_lbl = ctk.CTkLabel(
+            self, text="", text_color="#888888",
+            font=ctk.CTkFont(size=10), anchor="w", wraplength=480)
+        self._path_lbl.pack(fill="x", padx=14, pady=(0, 4))
+
+        # ── Entry list ────────────────────────────────────────────────────────
+        self._scroll = ctk.CTkScrollableFrame(self, height=300)
+        self._scroll.pack(fill="both", expand=True, padx=12, pady=4)
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        foot = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        foot.pack(fill="x", padx=0, pady=0)
+
+        self._select_btn = ctk.CTkButton(
+            foot, text="✔ Select this folder", width=160,
+            fg_color="#1f6aa5", state="disabled",
+            command=self._select_current)
+        self._select_btn.pack(side="left", padx=12, pady=8)
+
+        ctk.CTkButton(foot, text="Cancel", width=100,
+                      fg_color="#5a5a5a",
+                      command=self.destroy).pack(side="right", padx=12, pady=8)
+
+        self._navigate("")
+
+    def _navigate(self, path: str):
+        """Fetches and displays folder contents for the given path."""
+        self._path_lbl.configure(text="Loading…")
+        self.update()
+
+        data = self._client.browse(path)
+        if data is None:
+            self._path_lbl.configure(text="⚠ Could not reach server", text_color="#cc4444")
+            return
+
+        self._current = data.get("path", path)
+        display_path  = self._current or "(Drives)"
+        self._path_lbl.configure(text=display_path, text_color="#888888")
+
+        # Enable "Select" only when inside a real folder
+        self._select_btn.configure(
+            state="normal" if self._current else "disabled")
+
+        # Clear previous entries
+        for w in self._scroll.winfo_children():
+            w.destroy()
+
+        parent = data.get("parent")
+        if parent is not None:
+            self._make_entry("⬆  ..", parent, is_dir=True, is_parent=True)
+
+        entries = data.get("entries", [])
+        dirs  = [e for e in entries if e["is_dir"]]
+        files = [e for e in entries if not e["is_dir"]]
+
+        for e in dirs:
+            self._make_entry(f"📁  {e['name']}", e["path"], is_dir=True)
+        for e in files:
+            self._make_entry(f"    {e['name']}", e["path"], is_dir=False)
+
+    def _make_entry(self, label: str, path: str, is_dir: bool, is_parent: bool = False):
+        btn = ctk.CTkButton(
+            self._scroll, text=label, anchor="w",
+            fg_color="transparent",
+            hover_color="#2a3a4a" if is_dir else "#1e1e1e",
+            text_color="#cccccc" if is_dir else "#777777",
+            font=ctk.CTkFont(size=12),
+            height=28,
+            command=(lambda p=path: self._navigate(p)) if is_dir else (lambda: None),
+        )
+        btn.pack(fill="x", padx=4, pady=1)
+
+    def _select_current(self):
+        if self._current:
+            self._callback(self._current)
+            self.destroy()

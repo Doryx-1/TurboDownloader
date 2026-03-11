@@ -398,20 +398,14 @@ class RemoteServer:
                 except ImportError:
                     wtype = "http"
 
-                # (url, rel_dir, worker_type, format_id, audio_only, dest)
-                entry = (req.url, "", wtype, None, False, dest)
+                # (url, rel_dir, worker_type, format_id, audio_only, dest, from_remote)
+                entry = (req.url, "", wtype, None, False, dest, True)
                 app_ref._launch_downloads(
                     [entry],
                     workers=workers,
                     keep_tree=False,
                     dest_override=dest,
                 )
-                # Tag the item as remote so the UI can show a badge
-                # Find the most recently added item matching this URL
-                for it in app_ref.items.values():
-                    if it.url == req.url and not getattr(it, "from_remote", False):
-                        it.from_remote = True  # type: ignore[attr-defined]
-                        break
                 print(f"[remote-server] Queued ({wtype}): {req.url} → {dest}")
 
             app_ref.after(0, _inject)
@@ -449,6 +443,70 @@ class RemoteServer:
         @api.get("/history")
         def get_history(_ = Depends(require_auth)):
             return {"entries": app_ref._history.get_entries()}
+
+        @api.get("/browse")
+        def browse_folder(path: str = "", _ = Depends(require_auth)):
+            """
+            Returns the contents of a folder on the server machine.
+            path="" → returns drives (Windows) or "/" (Unix).
+            Returns: { "path": str, "parent": str|null, "entries": [ {name, path, is_dir} ] }
+            """
+            import os as _os
+            import sys as _sys
+
+            # ── Root level : drives on Windows, "/" on Unix ───────────────────
+            if not path:
+                if _sys.platform == "win32":
+                    import string
+                    drives = [
+                        {"name": f"{d}:\\", "path": f"{d}:\\", "is_dir": True}
+                        for d in string.ascii_uppercase
+                        if _os.path.exists(f"{d}:\\")
+                    ]
+                    return {"path": "", "parent": None, "entries": drives}
+                else:
+                    path = "/"
+
+            path = _os.path.abspath(path)
+            if not _os.path.isdir(path):
+                raise HTTPException(status_code=404, detail="Not a directory")
+
+            parent = str(pathlib.Path(path).parent) if path not in ("", "/") else None
+            if parent == path:   # filesystem root
+                parent = None
+
+            entries = []
+            try:
+                for name in sorted(_os.listdir(path)):
+                    full = _os.path.join(path, name)
+                    try:
+                        is_dir = _os.path.isdir(full)
+                        entries.append({"name": name, "path": full, "is_dir": is_dir})
+                    except PermissionError:
+                        pass
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+
+            return {"path": path, "parent": parent, "entries": entries}
+
+        @api.get("/dest_history")
+        def dest_history(_ = Depends(require_auth)):
+            """Returns the last used destination folders from history."""
+            entries  = app_ref._history.get_entries()
+            seen     = []
+            seen_set = set()
+            for e in entries:
+                dest = str(pathlib.Path(e.get("filename", "")).parent) \
+                       if e.get("filename") else ""
+                # Also grab from dest_path stored in item if filename is relative
+                if not dest or dest == ".":
+                    continue
+                if dest not in seen_set:
+                    seen_set.add(dest)
+                    seen.append(dest)
+                if len(seen) >= 8:
+                    break
+            return {"destinations": seen}
 
         # ── WebSocket live feed ───────────────────────────────────────────────
 
@@ -552,6 +610,10 @@ class RemoteClient:
 
     def add_url(self, url: str, dest: Optional[str] = None) -> Optional[dict]:
         return self._post("/downloads/add", {"url": url, "dest": dest})
+
+    def browse(self, path: str = "") -> Optional[dict]:
+        """Returns folder contents from the server filesystem."""
+        return self._get(f"/browse?path={path}")
 
     def pause(self, idx: int) -> Optional[dict]:
         return self._post(f"/downloads/{idx}/pause")
