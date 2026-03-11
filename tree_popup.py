@@ -502,6 +502,16 @@ class FileTreePopup(ctk.CTkToplevel):
                 node._checkbox.configure(text_color=color)
 
     def _browse_dest(self):
+        # Si le master est en mode client connecté → browse distant
+        client = getattr(self.master, "_remote_client", None)
+        if client and getattr(client, "connected", False):
+            from settings_popup import _RemoteBrowsePopup
+            _RemoteBrowsePopup(self, client, callback=lambda path: (
+                self._dest_entry.delete(0, "end"),
+                self._dest_entry.insert(0, path),
+            ))
+            return
+        # Sinon browse local
         from tkinter import filedialog
         folder = filedialog.askdirectory(title="Choose destination folder")
         if folder:

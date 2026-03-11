@@ -196,6 +196,23 @@ class TurboDownloader(ctk.CTk):
         else:
             self._remote_bar.pack_forget()
 
+    def _disconnect_remote(self):
+        """
+        Disconnect button in the remote status bar.
+        - Client mode : drops the connection, returns to local mode.
+        - Server mode : stops the server.
+        """
+        if self._remote_client is not None and self._remote_client.connected:
+            self._remote_client = None
+        elif self._remote_server is not None:
+            self._remote_server.stop()
+            self._remote_server = None
+            # Also update settings so server doesn't auto-restart on next launch
+            self._settings["remote_enabled"] = False
+            from settings_popup import save_settings
+            save_settings(self._settings)
+        self._update_remote_status_bar()
+
     def _open_remote_control(self):
         """Opens the Remote Control popup (connect to another instance)."""
         remote_server.open_remote_control_popup(
@@ -319,7 +336,14 @@ class TurboDownloader(ctk.CTk):
         self._remote_bar_lbl = ctk.CTkLabel(
             self._remote_bar, text="", anchor="w",
             font=ctk.CTkFont(size=10), text_color="#7aaa7a")
-        self._remote_bar_lbl.pack(fill="x", padx=10, pady=5)
+        self._remote_bar_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=5)
+        self._remote_disconnect_btn = ctk.CTkButton(
+            self._remote_bar, text="✕", width=26, height=20,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", hover_color="#3a1a1a",
+            text_color="#cc7777", border_width=0,
+            command=self._disconnect_remote)
+        self._remote_disconnect_btn.pack(side="right", padx=(0, 6), pady=4)
         # Démarré masqué — affiché par _update_remote_status_bar()
 
         # ── Bas sidebar : Clear + Settings + History + Remote ────────────────
