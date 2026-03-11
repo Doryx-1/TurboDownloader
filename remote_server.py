@@ -381,7 +381,7 @@ class RemoteServer:
         def add_download(req: AddURLRequest = Body(...), _ = Depends(require_auth)):
             """
             Injects a URL directly into the download queue — no popup, no UI interaction.
-            dest is the destination folder on the server machine.
+            Auto-detects yt-dlp URLs. dest is the destination folder on the server machine.
             """
             def _inject():
                 try:
@@ -390,18 +390,32 @@ class RemoteServer:
                     workers = 10
 
                 dest = req.dest or app_ref._settings.get("default_dest", "")
+
+                # Auto-detect worker type
+                try:
+                    import ytdlp_worker as _yw
+                    wtype = "ytdlp" if _yw.is_ytdlp_url(req.url) else "http"
+                except ImportError:
+                    wtype = "http"
+
                 # (url, rel_dir, worker_type, format_id, audio_only, dest)
-                entry = (req.url, "", "http", None, False, dest)
+                entry = (req.url, "", wtype, None, False, dest)
                 app_ref._launch_downloads(
                     [entry],
                     workers=workers,
                     keep_tree=False,
                     dest_override=dest,
                 )
-                print(f"[remote-server] Queued: {req.url} → {dest}")
+                # Tag the item as remote so the UI can show a badge
+                # Find the most recently added item matching this URL
+                for it in app_ref.items.values():
+                    if it.url == req.url and not getattr(it, "from_remote", False):
+                        it.from_remote = True  # type: ignore[attr-defined]
+                        break
+                print(f"[remote-server] Queued ({wtype}): {req.url} → {dest}")
 
             app_ref.after(0, _inject)
-            return {"status": "queued", "url": req.url, "dest": req.dest}
+            return {"status": "queued", "url": req.url, "dest": req.dest, "type": "auto"}
 
         @api.post("/downloads/{idx}/pause")
         def pause_download(idx: int, _ = Depends(require_auth)):
