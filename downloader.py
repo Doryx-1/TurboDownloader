@@ -449,16 +449,59 @@ class TurboDownloader(ctk.CTk):
         self.uiq.put((fn, args, kwargs))
 
     def _process_ui_queue(self):
+        """
+        Drains the UI queue on the main thread.
+
+        Hot deduplication: _update_row_ui(idx) and _refresh_filter_counts()
+        are collapsed — only the last queued call per idx survives each cycle.
+        This prevents queue bloat when workers emit many progress events per second.
+        """
         try:
-            while True:
-                fn, args, kwargs = self.uiq.get_nowait()
+            # Drain everything available right now into a local list
+            pending = []
+            try:
+                while True:
+                    pending.append(self.uiq.get_nowait())
+            except queue.Empty:
+                pass
+
+            if not pending:
+                return
+
+            # ── Deduplicate hot calls ────────────────────────────────────────
+            # Keep last _update_row_ui per idx, keep last _refresh_filter_counts
+            deduped   = []
+            row_seen  : dict = {}   # idx → position in deduped
+            filter_pos: int  = -1
+
+            for item in pending:
+                fn, args, kwargs = item
+                if fn is self._update_row_ui and args:
+                    idx = args[0]
+                    if idx in row_seen:
+                        deduped[row_seen[idx]] = None   # invalidate previous
+                    row_seen[idx] = len(deduped)
+                    deduped.append(item)
+                elif fn is self._refresh_filter_counts:
+                    if filter_pos >= 0:
+                        deduped[filter_pos] = None      # invalidate previous
+                    filter_pos = len(deduped)
+                    deduped.append(item)
+                else:
+                    deduped.append(item)
+
+            # ── Execute surviving calls ──────────────────────────────────────
+            for item in deduped:
+                if item is None:
+                    continue
+                fn, args, kwargs = item
                 try:
                     fn(*args, **kwargs)
                 except Exception as e:
                     print("[UIQ]", type(e).__name__, e)
-        except queue.Empty:
-            pass
-        self.after(80, self._process_ui_queue)
+
+        finally:
+            self.after(80, self._process_ui_queue)
 
     def ui_call(self, fn, *args, **kwargs):
         """Appel synchrone depuis un thread background → attend la réponse du thread UI.
@@ -611,7 +654,7 @@ class TurboDownloader(ctk.CTk):
 
     def _add_row_for_item(self, idx: int, item: DownloadItem):
         display_name = item.filename
-        if getattr(item, "from_remote", False):
+        if item.from_remote:
             display_name = f"📡 {item.filename}"
         row = DownloadRow(
             self.scroll, display_name,
@@ -620,7 +663,7 @@ class TurboDownloader(ctk.CTk):
             on_remove=lambda i=idx:   self.remove_one(i),
             on_priority=lambda i=idx: self.priority_one(i),
         )
-        if getattr(item, "from_remote", False):
+        if item.from_remote:
             row.frame.configure(border_color="#1a3a5a")
             row.name_lbl.configure(text_color="#7ab8e8")
         self.rows[idx] = row
@@ -902,7 +945,7 @@ class TurboDownloader(ctk.CTk):
             "waiting":     "Waiting",
             "downloading": "Downloading",
             "paused":      "Paused",
-            "moving":      "Converting…" if getattr(it, "worker_type", "http") == "ytdlp" else "Moving…",
+            "moving":      "Converting…" if it.worker_type == "ytdlp" else "Moving…",
             "done":        "Done",
             "error":       f"Erreur: {it.error_msg[:40]}",
             "canceled":    "Canceled",
@@ -910,7 +953,7 @@ class TurboDownloader(ctk.CTk):
         }
         status_text = state_labels.get(it.state, it.state)
         # Badge Remote si le DL vient d'un client distant
-        if getattr(it, "from_remote", False):
+        if it.from_remote:
             status_text = f"📡 {status_text}"
         row.status.configure(text=status_text)
 
@@ -1859,7 +1902,7 @@ class TurboDownloader(ctk.CTk):
                 it.segments     = []
                 it.speed_window.clear()
                 it.worker_type   = wtype
-                it.yt_format_id  = format_id   # type: ignore[attr-defined]
+                it.yt_format_id  = format_id
                 it.yt_audio_only = audio_only  # type: ignore[attr-defined]
                 it.from_remote   = from_remote # type: ignore[attr-defined]
                 return (existing_idx, it, True)   # True = reuse
@@ -1868,9 +1911,9 @@ class TurboDownloader(ctk.CTk):
                 self._next_idx += 1
                 it = DownloadItem(url=file_url, filename=name,
                                   dest_path=dest, relative_path=rel_dir)
-                it.worker_type   = wtype        # type: ignore[attr-defined]
-                it.yt_format_id  = format_id    # type: ignore[attr-defined]
-                it.yt_audio_only = audio_only   # type: ignore[attr-defined]
+                it.worker_type   = wtype     
+                it.yt_format_id  = format_id 
+                it.yt_audio_only = audio_only
                 it.from_remote   = from_remote  # type: ignore[attr-defined]
                 self.items[idx]  = it
                 return (idx, it, False)          # False = new
@@ -1934,7 +1977,7 @@ class TurboDownloader(ctk.CTk):
                     it.downloaded   = 0
                     it.cancel_event = threading.Event()
                     it.pause_event  = threading.Event()
-                    it.yt_retry     = True   # type: ignore[attr-defined]
+                    it.yt_retry     = True
                     self.ui(self._update_row_ui, i)
                     self.ui(self._refresh_filter_counts)
                     fut = self.executor.submit(self._ytdlp_worker, i)
@@ -1986,7 +2029,7 @@ class TurboDownloader(ctk.CTk):
 
             for i in new_indices:
                 it = self.items[i]
-                wtype = getattr(it, "worker_type", "http")
+                wtype = it.worker_type
                 if wtype == "ytdlp":
                     fut = self.executor.submit(self._ytdlp_worker, i)
                 else:

@@ -47,3 +47,17 @@ class DownloadItem:
 
     # Multipart segments — empty for standard single-stream download
     segments: List[SegmentInfo] = field(default_factory=list)
+
+    # ── Worker type & extended metadata ────────────────────────────────────────
+    # Formally declared here to avoid dynamic attribute creation at runtime.
+
+    # "http" for standard HTTP downloads, "ytdlp" for streaming URLs
+    worker_type:  str  = "http"
+
+    # True when this download was injected by a remote client (shows 📡 badge)
+    from_remote:  bool = False
+
+    # yt-dlp specific — only relevant when worker_type == "ytdlp"
+    yt_format_id:  Optional[str] = None   # format_id chosen in quality popup
+    yt_audio_only: bool          = False  # audio-only extraction mode
+    yt_retry:      bool          = False  # True on auto-retry with alternate client

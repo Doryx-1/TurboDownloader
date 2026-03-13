@@ -243,9 +243,9 @@ def run(idx: int, app) -> None:
     """
     it = app.items[idx]
 
-    audio_only  = getattr(it, "yt_audio_only",    False)
-    format_id   = getattr(it, "yt_format_id",     None)
-    is_retry    = getattr(it, "yt_retry",          False)  # True on auto-retry attempt
+    audio_only  = it.yt_audio_only
+    format_id   = it.yt_format_id
+    is_retry    = it.yt_retry  # True on auto-retry attempt
 
     # ── yt-dlp availability check ────────────────────────────────────────────
     try:
@@ -274,7 +274,10 @@ def run(idx: int, app) -> None:
     os.makedirs(dest_dir, exist_ok=True)
 
     # ── Progress hook ────────────────────────────────────────────────────────
+    _last_ui_update = 0.0   # throttle: max 5 UI updates/s per item
+
     def _progress_hook(d: dict) -> None:
+        nonlocal _last_ui_update
         if app.stop_all_event.is_set() or it.cancel_event.is_set():
             raise yt_dlp.utils.DownloadCancelled()
 
@@ -295,13 +298,18 @@ def run(idx: int, app) -> None:
                 app._record_bytes(delta)
                 it.speed_window.append((time.time(), delta))
 
-            app.ui(app._update_row_ui, idx)
+            # Throttle UI updates to max 5/s
+            now = time.time()
+            if now - _last_ui_update >= 0.20:
+                _last_ui_update = now
+                app.ui(app._update_row_ui, idx)
 
         elif status == "finished":
             # File downloaded — post-processing (remux/convert) starting
             it.state      = "moving"   # "moving" displays as "Converting…" for yt-dlp
             it.total_size = d.get("total_bytes") or it.total_size
             it.downloaded = it.total_size or it.downloaded
+            _last_ui_update = time.time()
             app.ui(app._update_row_ui, idx)
             app.ui(app._refresh_filter_counts)
 
