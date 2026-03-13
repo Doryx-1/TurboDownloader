@@ -19,6 +19,7 @@ A desktop download manager built for Jellyfin, Plex, and Emby server admins who 
 - **Windows taskbar progress** — live progress bar in the taskbar via `ITaskbarList3`
 - **Desktop notifications** — batch completion alerts via `plyer`
 - **Temp folder → move pattern** — files are written to a temp location first, then moved atomically to the destination so Jellyfin/Plex never sees incomplete files
+- **Remote control** — control a TurboDownloader instance running on another machine over HTTPS; send downloads remotely, monitor progress, browse the server's filesystem
 
 ---
 
@@ -33,14 +34,25 @@ beautifulsoup4
 
 Optional (graceful fallback if missing):
 ```
-plyer       # desktop notifications
-comtypes    # Windows taskbar progress
+plyer           # desktop notifications
+comtypes        # Windows taskbar progress
 ```
 
-Install dependencies:
+Optional (required for Remote Control feature):
+```
+fastapi
+uvicorn[standard]
+python-jose[cryptography]
+bcrypt
+httpx
+cryptography
+```
+
+Install all dependencies:
 ```bash
 pip install customtkinter requests beautifulsoup4
-pip install plyer comtypes   # optional
+pip install plyer comtypes                              # optional
+pip install fastapi "uvicorn[standard]" python-jose[cryptography] bcrypt httpx cryptography  # remote control
 ```
 
 ---
@@ -58,6 +70,40 @@ python main.py
 
 ---
 
+## Remote Control
+
+TurboDownloader supports a client/server mode over HTTPS, allowing you to send downloads to a machine running TurboDownloader from another PC on your network (or over the internet with port forwarding).
+
+### Setting up the server
+
+1. Open **Settings → Remote control — Server**
+2. Toggle the server **on**
+3. Set a username and password
+4. Click **Generate now** to create a self-signed SSL certificate
+5. Open port **9988** in Windows Firewall:
+   ```
+   netsh advfirewall firewall add rule name="TurboDownloader Remote" dir=in action=allow protocol=TCP localport=9988
+   ```
+6. The sidebar shows `📡 Server mode — listening on :9988` when active
+
+### Connecting as a client
+
+1. Open **Settings → Remote control — Client**
+2. Enter the server's **Host / IP**, **Port**, **Username**, and **Password**
+3. Optionally set a **Remote dest.** — the default download folder on the server machine. Click **📂 Browse…** (available once connected) to navigate the server's filesystem directly.
+4. Click **Connect** — the sidebar shows `🔗 Client mode — connected to host:port`
+
+Once connected, any URL you paste and start will be sent to the server instead of downloading locally. Downloads sent remotely appear with a 📡 badge on the server's queue.
+
+### Notes
+
+- The SSL certificate is self-signed — your browser or OS may show a security warning, which is expected and safe on a private network.
+- The password is never stored in plain text — bcrypt hashed in `settings.json`.
+- To disconnect, click the **✕** button in the remote status bar in the sidebar.
+- Default port: **9988**. Configurable in Settings.
+
+---
+
 ## Project structure
 
 ```
@@ -66,13 +112,17 @@ downloader.py        # main app window, crawl, workers, orchestration
 models.py            # DownloadItem and SegmentInfo dataclasses
 widgets.py           # DownloadRow widget
 tree_popup.py        # file selection popup (tree, search, sort)
+ytdlp_popup.py       # yt-dlp quality selection popup
 settings_popup.py    # settings window + load/save config
 history.py           # download history manager + popup
+remote_server.py     # remote control server (FastAPI) + client
 notifier.py          # desktop notification wrapper
 taskbar.py           # Windows taskbar progress (ITaskbarList3 via comtypes)
+ffmpeg_setup.py      # ffmpeg and Node.js detection/setup
+ytdlp_worker.py      # yt-dlp download worker
 ```
 
-Config and history are stored in `~/.turbodownloader/`.
+Config, history, and SSL certificates are stored in `~/.turbodownloader/`.
 
 ---
 
@@ -86,6 +136,40 @@ Config and history are stored in `~/.turbodownloader/`.
 | Segments | Number of parallel segments per file (1 = disabled, requires `Accept-Ranges`) |
 | Extensions | Which file extensions to detect during crawl |
 | Notifications | Enable/disable batch completion desktop alerts |
+| Remote Server | Enable HTTPS server, set credentials, generate SSL certificate |
+| Remote Client | Connect to a remote TurboDownloader instance |
+
+---
+
+## Building from source
+
+### Prerequisites
+
+```bash
+pip install pyinstaller
+```
+
+Place `ffmpeg.exe` (from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) → `ffmpeg-release-essentials.zip` → `bin/ffmpeg.exe`) and `icon.ico` next to `TurboDownloader.spec`.
+
+### Step 1 — Build with PyInstaller
+
+```bash
+pyinstaller TurboDownloader.spec
+```
+
+Output: `dist/TurboDownloader/` folder containing the application and all dependencies.
+
+### Step 2 — Create the installer (Windows)
+
+1. Install [Inno Setup 6](https://jrsoftware.org/isinfo.php) (free)
+2. Open `TurboDownloader.iss` in Inno Setup Compiler
+3. Click **Build → Compile** (or run `iscc TurboDownloader.iss` from the command line)
+
+Output: `installer/TurboDownloader_Setup.exe` — a single self-contained installer ready to distribute.
+
+### Optional: UPX compression
+
+Install [UPX](https://upx.github.io/) and add it to your PATH to reduce the final size by ~30%. PyInstaller will use it automatically when building.
 
 ---
 

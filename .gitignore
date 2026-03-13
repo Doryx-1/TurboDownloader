@@ -8,6 +8,7 @@ __pycache__/
 # Distribution / packaging
 dist/
 build/
+installer/
 *.egg-info/
 *.egg
 
@@ -39,3 +40,6 @@ settings.local.*
 *.spec
 ffmpeg.exe
 pyinstaller.txt
+*.exe
+version_info.txt
+*.iss
