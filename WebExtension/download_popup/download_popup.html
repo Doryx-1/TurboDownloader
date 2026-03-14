@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Send to TurboDownloader</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 460px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      background: #1a1a1a;
+      color: #dddddd;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px 10px;
+      background: #222; border-bottom: 1px solid #2a2a2a;
+      flex-shrink: 0;
+    }
+    .header img { width: 22px; height: 22px; }
+    .header h1  { font-size: 14px; font-weight: 600; color: #eee; }
+    .files-bar {
+      padding: 7px 16px;
+      background: #1e1e1e; border-bottom: 1px solid #2a2a2a;
+      font-size: 11px; color: #888; flex-shrink: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .dest-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px;
+      background: #202020; border-bottom: 1px solid #2a2a2a;
+      flex-shrink: 0;
+    }
+    .dest-icon { color: #888; font-size: 14px; flex-shrink: 0; }
+    .dest-path {
+      flex: 1; font-size: 11px; color: #7ab8e8;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+    }
+    .dest-path.empty { color: #555; font-style: italic; }
+    .dest-clear {
+      background: transparent; border: none; color: #555;
+      cursor: pointer; font-size: 14px; padding: 2px 4px;
+      border-radius: 3px; flex-shrink: 0; transition: color 0.15s;
+    }
+    .dest-clear:hover { color: #cc4444; }
+    .browser-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 16px;
+      background: #222; border-bottom: 1px solid #2a2a2a; flex-shrink: 0;
+    }
+    .breadcrumb {
+      flex: 1; font-size: 10px; color: #666;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .up-btn {
+      background: transparent; border: 1px solid #333;
+      color: #888; cursor: pointer; font-size: 11px;
+      padding: 3px 9px; border-radius: 4px;
+      transition: all 0.15s; flex-shrink: 0;
+    }
+    .up-btn:hover:not(:disabled) { color: #ddd; border-color: #555; background: #2a2a2a; }
+    .up-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .file-browser { flex: 1; overflow-y: auto; background: #1a1a1a; min-height: 0; }
+    .browser-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 16px; cursor: pointer;
+      border-bottom: 1px solid #1e1e1e; transition: background 0.12s;
+      user-select: none;
+    }
+    .browser-item:hover { background: #212121; }
+    .browser-item.selected { background: #0d1a2a; }
+    .item-icon { font-size: 14px; flex-shrink: 0; width: 18px; text-align: center; }
+    .item-name { flex: 1; font-size: 12px; color: #ccc; min-width: 0;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .item-name.file { color: #555; cursor: default; }
+    .browser-empty, .browser-loading {
+      padding: 30px 16px; text-align: center; font-size: 12px; color: #555;
+    }
+    .footer {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      background: #222; border-top: 1px solid #2a2a2a; flex-shrink: 0;
+    }
+    .select-btn {
+      background: #1a3a1a; border: 1px solid #2a5a2a;
+      color: #7aaa7a; cursor: pointer; font-size: 11px;
+      padding: 5px 12px; border-radius: 4px; transition: all 0.15s;
+    }
+    .select-btn:hover { background: #1e4a1e; color: #9aca9a; }
+    .send-btn {
+      margin-left: auto;
+      background: #1f6aa5; border: none;
+      color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
+      padding: 8px 18px; border-radius: 6px; transition: all 0.2s;
+    }
+    .send-btn:hover:not(:disabled) { background: #1a5a8f; }
+    .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .send-btn.success { background: #2e6b3e; }
+    .cancel-btn {
+      background: transparent; border: 1px solid #333;
+      color: #888; cursor: pointer; font-size: 13px;
+      padding: 8px 14px; border-radius: 6px; transition: all 0.2s;
+    }
+    .cancel-btn:hover { background: #2a2a2a; color: #ddd; }
+    ::-webkit-scrollbar       { width: 4px; }
+    ::-webkit-scrollbar-track { background: #1a1a1a; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="../icons/icon48.png" alt="">
+    <h1>Send to TurboDownloader</h1>
+  </div>
+  <div class="files-bar" id="files-bar">Loading…</div>
+  <div class="dest-bar">
+    <span class="dest-icon">📁</span>
+    <span class="dest-path empty" id="dest-path">No folder selected — will use server default</span>
+    <button class="dest-clear" id="dest-clear" title="Clear" style="display:none">✕</button>
+  </div>
+  <div class="browser-header">
+    <button class="up-btn" id="up-btn" disabled>⬆ Up</button>
+    <span class="breadcrumb" id="breadcrumb">Server root</span>
+  </div>
+  <div class="file-browser" id="file-browser">
+    <div class="browser-loading">Connecting to server…</div>
+  </div>
+  <div class="footer">
+    <button class="select-btn" id="select-btn">✔ Select this folder</button>
+    <button class="cancel-btn" id="cancel-btn">Cancel</button>
+    <button class="send-btn"   id="send-btn">⬇ Send</button>
+  </div>
+  <script src="download_popup.js"></script>
+</body>
+</html>

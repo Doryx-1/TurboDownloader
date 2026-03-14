@@ -237,47 +237,95 @@ class RemoteServer:
             return True
 
         if not DEPS_OK:
-            print(f"[remote] Cannot start server — missing packages: {DEPS_MISSING}")
+            msg = f"Remote server cannot start.\nMissing packages: {DEPS_MISSING}\n\nDEPS_OK={DEPS_OK}"
+            print(f"[remote] {msg}")
+            self._show_error(msg)
             return False
 
-        if not ensure_ssl_cert():
-            print("[remote] Cannot start server — SSL cert unavailable")
-            return False
+        port      = int(self._settings.get("remote_port", DEFAULT_PORT))
+        use_ssl   = False   # HTTP — browsers block self-signed certs in extensions
 
-        port = int(self._settings.get("remote_port", DEFAULT_PORT))
+        if use_ssl:
+            ssl_ok = ensure_ssl_cert()
+            if not ssl_ok:
+                msg = (f"Remote server cannot start.\nSSL certificate generation failed.\n\n"
+                       f"CERT_FILE={CERT_FILE}\nKEY_FILE={KEY_FILE}\n"
+                       f"Exists: cert={CERT_FILE.exists()}, key={KEY_FILE.exists()}")
+                print(f"[remote] {msg}")
+                self._show_error(msg)
+                return False
 
         try:
             fastapi_app = self._build_fastapi_app()
             import uvicorn
+            import sys as _sys
+            import os  as _os
 
-            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ssl_ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
+            # ── PyInstaller fix: stdout/stderr are None in windowed exe ──────
+            if _sys.stdout is None:
+                _sys.stdout = open(_os.devnull, "w")
+            if _sys.stderr is None:
+                _sys.stderr = open(_os.devnull, "w")
 
-            config = uvicorn.Config(
-                fastapi_app,
+            UVICORN_LOG_CONFIG = {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {},
+                "handlers":   {},
+                "loggers": {
+                    "uvicorn":        {"handlers": [], "level": "WARNING"},
+                    "uvicorn.error":  {"handlers": [], "level": "WARNING"},
+                    "uvicorn.access": {"handlers": [], "level": "WARNING", "propagate": False},
+                },
+            }
+
+            cfg_kwargs = dict(
+                app=fastapi_app,
                 host="0.0.0.0",
                 port=port,
-                ssl_certfile=str(CERT_FILE),
-                ssl_keyfile=str(KEY_FILE),
-                log_level="warning",
+                log_config=UVICORN_LOG_CONFIG,
                 loop="asyncio",
-                workers=1,          # no subprocess spawn — mandatory for PyInstaller
+                workers=1,
                 access_log=False,
             )
-            self._server = uvicorn.Server(config)
-            self._thread = threading.Thread(
+            if use_ssl:
+                cfg_kwargs["ssl_certfile"] = str(CERT_FILE)
+                cfg_kwargs["ssl_keyfile"]  = str(KEY_FILE)
+
+            config           = uvicorn.Config(**cfg_kwargs)
+            self._server     = uvicorn.Server(config)
+            self._use_ssl    = use_ssl
+            self._bound_port = port
+            self._thread     = threading.Thread(
                 target=self._server.run,
                 daemon=True,
                 name="TurboRemoteServer",
             )
             self._thread.start()
             self._running = True
-            print(f"[remote] Server started on https://0.0.0.0:{port}")
+            proto = "https" if use_ssl else "http"
+            print(f"[remote] Server started on {proto}://0.0.0.0:{port}")
             return True
 
         except Exception as e:
-            print(f"[remote] Start error: {e}")
+            import traceback
+            msg = f"Remote server start error:\n{e}\n\n{traceback.format_exc()}"
+            print(f"[remote] {msg}")
+            self._show_error(msg)
             return False
+
+    @staticmethod
+    def _show_error(msg: str):
+        """Shows an error dialog — works even without a Tk root window."""
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("TurboDownloader — Remote Server Error", msg)
+            root.destroy()
+        except Exception:
+            pass  # last resort — already printed above
 
     def stop(self):
         """Gracefully shuts down the server."""
@@ -302,8 +350,10 @@ class RemoteServer:
         api.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
+            allow_origin_regex=r"chrome-extension://.*|moz-extension://.*",
             allow_methods=["*"],
             allow_headers=["*"],
+            allow_credentials=False,
         )
 
         bearer   = HTTPBearer(auto_error=False)
@@ -412,6 +462,36 @@ class RemoteServer:
 
             app_ref.after(0, _inject)
             return {"status": "queued", "url": req.url, "dest": req.dest, "type": "auto"}
+
+        @api.post("/downloads/add_interactive")
+        def add_interactive(req: AddURLRequest = Body(...), _ = Depends(require_auth)):
+            """
+            Injects one or more URLs into the url_box and calls start_downloads(),
+            exactly as if the user had pasted them manually.
+            Opens the native file tree popup and brings TurboDownloader to the front.
+            URLs can be newline-separated in req.url for batch injection.
+            """
+            def _inject():
+                try:
+                    # ── Inject URLs into the input box ───────────────────────
+                    app_ref.url_box.delete("1.0", "end")
+                    app_ref.url_box.insert("end", req.url.strip())
+
+                    # ── Bring window to front ────────────────────────────────
+                    app_ref.deiconify()      # restore if minimized
+                    app_ref.lift()           # raise above other windows
+                    app_ref.focus_force()    # grab focus
+
+                    # ── Trigger the normal download flow (opens tree_popup) ──
+                    app_ref.start_downloads()
+
+                    print(f"[remote-server] Interactive inject: {req.url[:80]}")
+
+                except Exception as e:
+                    print(f"[remote-server] Interactive inject error: {e}")
+
+            app_ref.after(0, _inject)
+            return {"status": "interactive", "url": req.url}
 
         @api.post("/downloads/{idx}/pause")
         def pause_download(idx: int, _ = Depends(require_auth)):
@@ -551,12 +631,19 @@ class RemoteServer:
 
 class RemoteClient:
     """
-    Thin HTTPS client for connecting to a remote TurboDownloader server.
-    Uses httpx with SSL verification disabled (self-signed cert).
+    HTTP/HTTPS client for connecting to a remote TurboDownloader server.
+    - localhost / 127.0.0.1 → plain HTTP (no SSL issues)
+    - any other host        → HTTPS with SSL verification disabled (self-signed cert)
     """
 
+    _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+
     def __init__(self, host: str, port: int, username: str, password: str):
-        self._base    = f"https://{host}:{port}"
+        # HTTP for all connections — SSL with self-signed certs causes issues
+        # with browsers and extension fetch(). HTTPS can be re-enabled later
+        # with proper certificates.
+        self._base    = f"http://{host}:{port}"
+        self._verify  = False
         self._user    = username
         self._pass    = password
         self._token   = ""
@@ -612,6 +699,11 @@ class RemoteClient:
 
     def add_url(self, url: str, dest: Optional[str] = None) -> Optional[dict]:
         return self._post("/downloads/add", {"url": url, "dest": dest})
+
+    def add_interactive(self, urls: list) -> Optional[dict]:
+        """Injects URLs into TurboDownloader's input box and opens the native popup."""
+        combined = "\n".join(urls)
+        return self._post("/downloads/add_interactive", {"url": combined, "dest": None})
 
     def browse(self, path: str = "") -> Optional[dict]:
         """Returns folder contents from the server filesystem."""

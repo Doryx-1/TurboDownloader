@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TurboDownloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <div class="header">
+    <div class="header-left">
+      <img src="../icons/icon48.png" class="logo" alt="">
+      <span class="title">TurboDownloader</span>
+    </div>
+    <div class="header-right">
+      <div class="status-dot" id="status-dot" title="Connection status"></div>
+      <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
+    </div>
+  </div>
+
+  <!-- ── Server status bar ── -->
+  <div class="status-bar" id="status-bar">
+    <span id="status-text">Checking connection…</span>
+    <span id="status-queue"></span>
+  </div>
+
+  <!-- ── Intercept toggle ── -->
+  <div class="intercept-row">
+    <span class="intercept-label">Auto-intercept downloads</span>
+    <label class="toggle">
+      <input type="checkbox" id="intercept-toggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <!-- ── Links section ── -->
+  <div class="section-header">
+    <span id="links-count">Scanning page…</span>
+    <div class="section-actions">
+      <button class="text-btn" id="select-all">All</button>
+      <button class="text-btn" id="select-none">None</button>
+      <button class="text-btn" id="rescan-btn">↻ Rescan</button>
+    </div>
+  </div>
+
+  <!-- ── Destination ── -->
+  <div class="dest-row">
+    <span class="dest-label">📁</span>
+    <input type="text" id="dest-input" class="dest-input" placeholder="Destination (server path, leave blank for default)">
+  </div>
+
+  <!-- ── Link list ── -->
+  <div class="link-list" id="link-list">
+    <div class="empty-state">No downloadable links found on this page.</div>
+  </div>
+
+  <!-- ── Footer ── -->
+  <div class="footer">
+    <span id="selected-count" class="selected-count">0 selected</span>
+    <button class="send-btn" id="send-btn" disabled>
+      ⬇ Send to TurboDownloader
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

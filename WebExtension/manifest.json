@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "TurboDownloader",
+  "version": "1.0",
+  "description": "Send downloads to TurboDownloader desktop app",
+
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "downloads",
+    "downloads.open",
+    "storage",
+    "scripting",
+    "notifications"
+  ],
+
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://localhost/*",
+    "https://127.0.0.1/*",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_badge_text": ""
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "options_ui": {
+    "page": "settings/settings.html",
+    "open_in_tab": true
+  },
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["download_popup/download_popup.html"],
+      "matches":   ["<all_urls>"]
+    }
+  ],
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "turbodownloader@extension",
+      "strict_min_version": "109.0"
+    }
+  }
+}
