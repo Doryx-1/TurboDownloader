@@ -59,11 +59,15 @@ def ffmpeg_available() -> bool:
     p = ffmpeg_path()
     if not p:
         return False
-    # Quick sanity check
+    # Quick sanity check — hide console window on Windows (PyInstaller bundled exe)
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
     try:
         result = subprocess.run(
             [p, "-version"],
-            capture_output=True, timeout=5
+            capture_output=True, timeout=5,
+            **kwargs
         )
         return result.returncode == 0
     except Exception:
@@ -103,8 +107,11 @@ def node_available() -> bool:
     p = node_path()
     if not p:
         return False
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
     try:
-        r = subprocess.run([p, "--version"], capture_output=True, timeout=5)
+        r = subprocess.run([p, "--version"], capture_output=True, timeout=5, **kwargs)
         return r.returncode == 0
     except Exception:
         return False
@@ -129,11 +136,25 @@ def install_nodeenv(on_progress=None, on_done=None, on_error=None):
     Installs a minimal Node.js environment via nodeenv into ~/.turbodownloader/nodeenv.
     Runs in a background thread.
 
+    NOTE: When running as a PyInstaller bundle, sys.executable points to the
+    bundled .exe — calling it with "-m pip" would re-launch the whole app.
+    Installation is therefore skipped in bundled mode; Node.js must be installed
+    separately or bundled alongside the exe.
+
     Callbacks (all optional, called from the worker thread):
         on_progress(message: str)
         on_done()
         on_error(message: str)
     """
+    # ── Guard: never attempt pip/nodeenv install inside a PyInstaller bundle ──
+    if getattr(sys, "frozen", False):
+        msg = ("Node.js auto-install is not available in the bundled version.\n"
+               "yt-dlp streaming features will work without Node.js for most sites.")
+        print(f"[deps] {msg}")
+        if on_error:
+            on_error(msg)
+        return
+
     def _work():
         try:
             # Check nodeenv is installed

@@ -261,6 +261,8 @@ class RemoteServer:
                 ssl_keyfile=str(KEY_FILE),
                 log_level="warning",
                 loop="asyncio",
+                workers=1,          # no subprocess spawn — mandatory for PyInstaller
+                access_log=False,
             )
             self._server = uvicorn.Server(config)
             self._thread = threading.Thread(
