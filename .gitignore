@@ -43,3 +43,5 @@ pyinstaller.txt
 *.exe
 version_info.txt
 *.iss
+*.pem
+*.crx
