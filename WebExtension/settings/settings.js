@@ -72,20 +72,24 @@
     btn.textContent = "Testing…";
     btn.disabled = true;
 
-    const result = await chrome.runtime.sendMessage({
-      type:     "TEST_CONNECTION",
-      host:     document.getElementById("host").value.trim(),
-      port:     parseInt(document.getElementById("port").value) || 9988,
-      username: document.getElementById("username").value.trim(),
-      password: document.getElementById("password").value,
-    });
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type:     "TEST_CONNECTION",
+        host:     document.getElementById("host").value.trim(),
+        port:     parseInt(document.getElementById("port").value) || 9988,
+        username: document.getElementById("username").value.trim(),
+        password: document.getElementById("password").value,
+      });
 
-    setFeedback(
-      result.ok
-        ? "✓ Connection successful — TurboDownloader is reachable"
-        : `✗ Connection failed: ${result.error}`,
-      result.ok ? "success" : "error"
-    );
+      setFeedback(
+        result?.ok
+          ? "✓ Connection successful — TurboDownloader is reachable"
+          : `✗ Connection failed: ${result?.error || "Unknown error"}`,
+        result?.ok ? "success" : "error"
+      );
+    } catch (e) {
+      setFeedback(`✗ Error: ${e.message}`, "error");
+    }
 
     btn.textContent = "Test connection";
     btn.disabled = false;
@@ -111,7 +115,9 @@
     };
 
     await chrome.storage.local.set(settings);
-    await chrome.runtime.sendMessage({ type: "SETTINGS_SAVED" });
+
+    // SETTINGS_SAVED n'attend pas de réponse — on ignore l'erreur de channel fermé
+    chrome.runtime.sendMessage({ type: "SETTINGS_SAVED" }).catch(() => {});
 
     // ── Visual confirmation ──────────────────────────────────────────────────
     btn.textContent  = "✓ Saved !";
