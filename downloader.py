@@ -366,7 +366,7 @@ class TurboDownloader(ctk.CTk):
                       command=self._open_remote_control).pack(side="left", expand=True,
                                                               fill="x", padx=(0, 0))
 
-        ctk.CTkLabel(sidebar, text="© Thomas PIERRE",
+        ctk.CTkLabel(sidebar, text="© Dlax-1",
                      font=ctk.CTkFont(size=10), text_color="#333333").pack(
                          side="bottom", anchor="w", padx=16, pady=(0, 6))
 
