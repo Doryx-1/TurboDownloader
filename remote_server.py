@@ -639,16 +639,16 @@ class RemoteClient:
     _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
     def __init__(self, host: str, port: int, username: str, password: str):
-        # HTTP for all connections — SSL with self-signed certs causes issues
-        # with browsers and extension fetch(). HTTPS can be re-enabled later
-        # with proper certificates.
         self._base    = f"http://{host}:{port}"
+        self._host    = host
+        self._port    = port
         self._verify  = False
         self._user    = username
         self._pass    = password
         self._token   = ""
         self._headers = {}
         self._ok      = False
+        self._alive   = True   # set to False to stop heartbeat thread
 
         try:
             import httpx
@@ -676,19 +676,78 @@ class RemoteClient:
                 timeout=8,
             )
             print(f"[remote-client] Status: {r.status_code}")
-            print(f"[remote-client] Response: {r.text}")
             if r.status_code == 200:
                 self._token   = r.json()["token"]
                 self._headers = {
                     "Authorization": f"Bearer {self._token}",
                     "Content-Type":  "application/json",
                 }
-                self._ok = True
+                self._ok    = True
+                self._alive = True
                 return True, "Connected"
             return False, f"Auth failed ({r.status_code}): {r.text[:200]}"
         except Exception as e:
             print(f"[remote-client] Exception: {type(e).__name__}: {e}")
             return False, f"Connection error: {e}"
+
+    def start_heartbeat(self, on_disconnect=None, on_reconnect=None,
+                        interval: int = 10, max_retries: int = 5):
+        """
+        Starts a background thread that pings the server every `interval` seconds.
+        - on_disconnect() : called when connection is lost
+        - on_reconnect()  : called when connection is restored
+        - max_retries     : number of reconnect attempts before giving up (0 = infinite)
+        """
+        import threading as _th
+        import time as _t
+
+        def _heartbeat():
+            retries = 0
+            was_connected = True
+
+            while self._alive:
+                _t.sleep(interval)
+                if not self._alive:
+                    break
+
+                # Ping server
+                result = self._get("/status")
+                if result is not None:
+                    if not was_connected:
+                        # Reconnected!
+                        print("[remote-client] Reconnected to server ✓")
+                        was_connected = True
+                        retries = 0
+                        if on_reconnect:
+                            on_reconnect()
+                else:
+                    if was_connected:
+                        print("[remote-client] Lost connection to server")
+                        was_connected = False
+                        self._ok = False
+                        if on_disconnect:
+                            on_disconnect()
+
+                    # Try to reconnect
+                    if max_retries == 0 or retries < max_retries:
+                        retries += 1
+                        print(f"[remote-client] Reconnect attempt {retries}…")
+                        ok, msg = self.connect()
+                        if ok:
+                            print(f"[remote-client] Reconnect OK ✓")
+                            was_connected = True
+                            retries = 0
+                            if on_reconnect:
+                                on_reconnect()
+                        else:
+                            print(f"[remote-client] Reconnect failed: {msg}")
+
+        _th.Thread(target=_heartbeat, daemon=True, name="RemoteHeartbeat").start()
+
+    def disconnect(self):
+        """Signals the heartbeat thread to stop."""
+        self._alive = False
+        self._ok    = False
 
     @property
     def connected(self) -> bool:

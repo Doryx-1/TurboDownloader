@@ -143,16 +143,52 @@ class TurboDownloader(ctk.CTk):
         save_settings(self._settings)
 
     def _start_remote_if_enabled(self):
-        """Starts the remote control server if enabled in settings."""
-        if not self._settings.get("remote_enabled", False):
-            return
-        if not self._settings.get("remote_username") or not self._settings.get("remote_password_hash"):
-            print("[remote] Skipping start — username or password not configured")
-            return
-        self._remote_server = remote_server.RemoteServer(self, self._settings)
-        ok = self._remote_server.start()
-        if not ok:
-            self._remote_server = None
+        """Starts the remote control server if enabled in settings.
+        Also auto-connects as client if auto-connect is configured."""
+        # ── Server ────────────────────────────────────────────────────────────
+        if self._settings.get("remote_enabled", False):
+            if self._settings.get("remote_username") and self._settings.get("remote_password_hash"):
+                self._remote_server = remote_server.RemoteServer(self, self._settings)
+                ok = self._remote_server.start()
+                if not ok:
+                    self._remote_server = None
+            else:
+                print("[remote] Skipping server start — username or password not configured")
+
+        # ── Client auto-connect ───────────────────────────────────────────────
+        if self._settings.get("remote_client_autoconnect", False):
+            host = self._settings.get("remote_client_host", "")
+            port = int(self._settings.get("remote_client_port", 9988))
+            user = self._settings.get("remote_client_user", "")
+            pwd  = self._settings.get("remote_client_password", "")
+
+            if host and user and pwd:
+                print(f"[remote] Auto-connecting to {host}:{port}…")
+                def _auto_connect():
+                    try:
+                        c = remote_server.RemoteClient(host, port, user, pwd)
+                        ok, msg = c.connect()
+                        if ok:
+                            self._remote_client = c
+                            auto_retry = self._settings.get("remote_client_autoretry", True)
+                            if auto_retry:
+                                c.start_heartbeat(
+                                    on_disconnect=lambda: self.ui(self._update_remote_status_bar),
+                                    on_reconnect=lambda: self.ui(self._update_remote_status_bar),
+                                    interval=15,
+                                    max_retries=0,
+                                )
+                            self.ui(self._update_remote_status_bar)
+                            print(f"[remote] Auto-connect OK ✓")
+                        else:
+                            print(f"[remote] Auto-connect failed: {msg}")
+                    except Exception as e:
+                        print(f"[remote] Auto-connect error: {e}")
+                import threading as _th
+                _th.Thread(target=_auto_connect, daemon=True,
+                           name="AutoConnect").start()
+            else:
+                print("[remote] Auto-connect skipped — missing host/user/password")
 
     def _apply_remote_settings(self):
         """
@@ -170,48 +206,53 @@ class TurboDownloader(ctk.CTk):
         self._update_remote_status_bar()
 
     def _update_remote_status_bar(self):
-        """Shows/hides/updates the remote status badge in the sidebar."""
-        # Guard — bar may not exist yet during __init__
-        if not hasattr(self, "_remote_bar"):
+        """Shows/hides/updates the two remote status badges independently."""
+        if not hasattr(self, "_remote_srv_bar"):
             return
 
-        srv_running = self._remote_server is not None and self._remote_server.is_running
+        srv_running   = self._remote_server is not None and self._remote_server.is_running
         cli_connected = self._remote_client is not None and self._remote_client.connected
 
+        # ── Server bar ───────────────────────────────────────────────────────
         if srv_running:
             port = self._settings.get("remote_port", 9988)
-            self._remote_bar_lbl.configure(
-                text=f"📡  Server mode — listening on :{port}",
-                text_color="#7aaa7a")
-            self._remote_bar.configure(fg_color="#0d1f0d", border_color="#1a3a1a")
-            self._remote_bar.pack(fill="x", padx=16, pady=(0, 8))
-        elif cli_connected:
+            self._remote_srv_lbl.configure(
+                text=f"📡  Server — listening on :{port}")
+            self._remote_srv_bar.pack(fill="x", padx=16, pady=(0, 4))
+        else:
+            self._remote_srv_bar.pack_forget()
+
+        # ── Client bar ───────────────────────────────────────────────────────
+        if cli_connected:
             host = self._settings.get("remote_client_host", "?")
             port = self._settings.get("remote_client_port", 9988)
-            self._remote_bar_lbl.configure(
-                text=f"🔗  Client mode — connected to {host}:{port}",
-                text_color="#7aaadd")
-            self._remote_bar.configure(fg_color="#0d0d1f", border_color="#1a1a3a")
-            self._remote_bar.pack(fill="x", padx=16, pady=(0, 8))
+            self._remote_cli_lbl.configure(
+                text=f"🔗  Client — connected to {host}:{port}")
+            self._remote_cli_bar.pack(fill="x", padx=16, pady=(0, 8))
         else:
-            self._remote_bar.pack_forget()
+            self._remote_cli_bar.pack_forget()
 
-    def _disconnect_remote(self):
-        """
-        Disconnect button in the remote status bar.
-        - Client mode : drops the connection, returns to local mode.
-        - Server mode : stops the server.
-        """
-        if self._remote_client is not None and self._remote_client.connected:
-            self._remote_client = None
-        elif self._remote_server is not None:
+    def _disconnect_server(self):
+        """Stop the remote server."""
+        if self._remote_server is not None:
             self._remote_server.stop()
             self._remote_server = None
-            # Also update settings so server doesn't auto-restart on next launch
             self._settings["remote_enabled"] = False
             from settings_popup import save_settings
             save_settings(self._settings)
         self._update_remote_status_bar()
+
+    def _disconnect_client(self):
+        """Disconnect from remote server and return to local mode."""
+        if self._remote_client is not None:
+            self._remote_client.disconnect()   # stops heartbeat thread
+            self._remote_client = None
+        self._update_remote_status_bar()
+
+    def _disconnect_remote(self):
+        """Legacy — disconnect whichever is active (used by old code paths)."""
+        self._disconnect_client()
+        self._disconnect_server()
 
     def _open_remote_control(self):
         """Opens the Remote Control popup (connect to another instance)."""
@@ -328,23 +369,40 @@ class TurboDownloader(ctk.CTk):
             text_color="#555555", font=ctk.CTkFont(size=11))
         self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 10))
 
-        # ── Remote status bar ─────────────────────────────────────────────────
-        # Visible seulement quand le serveur tourne OU qu'un client est connecté
-        self._remote_bar = ctk.CTkFrame(sidebar, fg_color="#0d1f0d",
-                                        corner_radius=6, border_width=1,
-                                        border_color="#1a3a1a")
-        self._remote_bar_lbl = ctk.CTkLabel(
-            self._remote_bar, text="", anchor="w",
+        # ── Remote status bars ────────────────────────────────────────────────
+        # Deux barres distinctes : une pour le serveur, une pour le client.
+        # Chacune est indépendante — on peut être serveur ET client en même temps.
+
+        # Barre serveur (verte)
+        self._remote_srv_bar = ctk.CTkFrame(sidebar, fg_color="#0d1f0d",
+                                            corner_radius=6, border_width=1,
+                                            border_color="#1a3a1a")
+        self._remote_srv_lbl = ctk.CTkLabel(
+            self._remote_srv_bar, text="", anchor="w",
             font=ctk.CTkFont(size=10), text_color="#7aaa7a")
-        self._remote_bar_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=5)
-        self._remote_disconnect_btn = ctk.CTkButton(
-            self._remote_bar, text="✕", width=26, height=20,
+        self._remote_srv_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=5)
+        ctk.CTkButton(
+            self._remote_srv_bar, text="✕", width=26, height=20,
             font=ctk.CTkFont(size=11),
             fg_color="transparent", hover_color="#3a1a1a",
             text_color="#cc7777", border_width=0,
-            command=self._disconnect_remote)
-        self._remote_disconnect_btn.pack(side="right", padx=(0, 6), pady=4)
-        # Démarré masqué — affiché par _update_remote_status_bar()
+            command=self._disconnect_server).pack(side="right", padx=(0, 6), pady=4)
+
+        # Barre client (bleue)
+        self._remote_cli_bar = ctk.CTkFrame(sidebar, fg_color="#0d0d1f",
+                                            corner_radius=6, border_width=1,
+                                            border_color="#1a1a3a")
+        self._remote_cli_lbl = ctk.CTkLabel(
+            self._remote_cli_bar, text="", anchor="w",
+            font=ctk.CTkFont(size=10), text_color="#7aaadd")
+        self._remote_cli_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=5)
+        ctk.CTkButton(
+            self._remote_cli_bar, text="✕", width=26, height=20,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", hover_color="#1a1a3a",
+            text_color="#7aaadd", border_width=0,
+            command=self._disconnect_client).pack(side="right", padx=(0, 6), pady=4)
+        # Démarrées masquées — affichées par _update_remote_status_bar()
 
         # ── Bas sidebar : Clear + Settings + History + Remote ────────────────
 
@@ -671,18 +729,21 @@ class TurboDownloader(ctk.CTk):
 
     def _add_remote_shadow_row(self, url: str, dest: str):
         """
-        Adds a read-only 'shadow' row on the client side to track a download
+        Adds a read-only shadow row on the client side to track a download
         running on the remote server. Polls the server every 2s for updates.
         """
         import os as _os
-        name = _os.path.basename(url.split("?")[0]) or url[:60]
-
-        # Assign a local shadow index (negative to avoid collisions with real items)
-        shadow_idx = -(len(self._shadow_rows) + 1) if hasattr(self, "_shadow_rows") else -1
         if not hasattr(self, "_shadow_rows"):
             self._shadow_rows = {}
+        if not hasattr(self, "_shadow_counter"):
+            self._shadow_counter = 0
 
-        # Create a disabled DownloadRow (no actions — read-only)
+        name = _os.path.basename(url.split("?")[0]) or url[:60]
+
+        # Atomic counter — no collisions even on rapid successive calls
+        self._shadow_counter -= 1
+        shadow_idx = self._shadow_counter
+
         row = DownloadRow(
             self.scroll, f"📡 {name}",
             on_pause=lambda: None,
@@ -690,7 +751,6 @@ class TurboDownloader(ctk.CTk):
             on_remove=lambda: self._remove_shadow_row(shadow_idx),
             on_priority=None,
         )
-        # Disable all action buttons — it's just a display row
         row.pause_btn.configure(state="disabled")
         row.cancel_btn.configure(state="disabled")
         row.status.configure(text="📡 Sent to server", text_color="#5a9acd")
@@ -703,30 +763,44 @@ class TurboDownloader(ctk.CTk):
 
         # Start polling thread to follow progress on the server
         def _poll():
-            import time as _time
+            import time as _t
             consecutive_done = 0
+            consecutive_fail = 0
+
             while shadow_idx in getattr(self, "_shadow_rows", {}):
-                _time.sleep(2)
-                if self._remote_client is None or not self._remote_client.connected:
-                    break
+                _t.sleep(2)
+
+                client = self._remote_client
+                if client is None or not client.connected:
+                    def _ui_offline(r=row):
+                        if shadow_idx not in getattr(self, "_shadow_rows", {}):
+                            return
+                        r.status.configure(text="📡 Client offline", text_color="#888888")
+                    self.ui(_ui_offline)
+                    consecutive_fail += 1
+                    if consecutive_fail >= 30:  # 60s without client → stop
+                        break
+                    continue
+
+                consecutive_fail = 0
+
                 try:
-                    data = self._remote_client.get_status()
+                    data = client.get_status()
                     if not data:
                         continue
-                    # Find matching download on server by URL
-                    match = next(
-                        (d for d in data.get("downloads", [])
-                         if d.get("url") == url),
-                        None
-                    )
+
+                    downloads = data.get("downloads", [])
+                    matches = [d for d in downloads if d.get("url") == url]
+                    match   = matches[-1] if matches else None
+
                     if not match:
                         continue
 
-                    state   = match.get("state", "?")
-                    pct     = match.get("progress", 0) / 100
-                    speed   = match.get("speed_bps", 0)
-                    total   = match.get("total", 0)
-                    fname   = match.get("filename", name)
+                    state = match.get("state", "?")
+                    pct   = match.get("progress", 0) / 100
+                    speed = match.get("speed_bps", 0)
+                    fname = match.get("filename", name)
+                    err   = match.get("error", "")
 
                     state_map = {
                         "downloading": ("📡 Downloading", "#2e8b57"),
@@ -734,19 +808,18 @@ class TurboDownloader(ctk.CTk):
                         "paused":      ("📡 Paused",      "#5a7a9a"),
                         "moving":      ("📡 Converting…", "#888800"),
                         "done":        ("📡 Done ✓",      "#2e6b3e"),
-                        "error":       (f"📡 Error: {match.get('error','')[:30]}", "#8B0000"),
+                        "error":       (f"📡 Error: {err[:30]}", "#8B0000"),
                         "canceled":    ("📡 Canceled",    "#555555"),
                     }
                     lbl, color = state_map.get(state, (f"📡 {state}", "#888888"))
 
                     def _ui_update(r=row, p=pct, l=lbl, c=color,
-                                   sp=speed, t=total, fn=fname):
+                                   sp=speed, fn=fname, st=state):
                         if shadow_idx not in getattr(self, "_shadow_rows", {}):
                             return
                         r.name_lbl.configure(text=f"📡 {fn}")
                         r.status.configure(text=l, text_color=c)
                         r.progress.set(p)
-                        # Speed
                         if sp > 0:
                             if sp < 1024:
                                 spd_txt = f"{sp} B/s"
@@ -755,7 +828,7 @@ class TurboDownloader(ctk.CTk):
                             else:
                                 spd_txt = f"{sp/1024**2:.2f} MB/s"
                             r.speed_lbl.configure(text=f"Remote · {spd_txt}")
-                        if state in ("done", "error", "canceled"):
+                        if st in ("done", "error", "canceled"):
                             r.remove_btn.configure(state="normal")
 
                     self.ui(_ui_update)
@@ -763,7 +836,7 @@ class TurboDownloader(ctk.CTk):
                     if state in ("done", "error", "canceled"):
                         consecutive_done += 1
                         if consecutive_done >= 2:
-                            break   # Stop polling — final state reached
+                            break
                     else:
                         consecutive_done = 0
 

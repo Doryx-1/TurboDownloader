@@ -49,11 +49,15 @@ def load_settings() -> dict:
         "remote_password_hash": "",
         "remote_jwt_secret":    "",
         # client-side connection info
-        "remote_client_host":   "",
-        "remote_client_port":   9988,
-        "remote_client_user":   "",
+        "remote_client_host":           "",
+        "remote_client_port":           9988,
+        "remote_client_user":           "",
+        "remote_client_password":       "",
+        "remote_client_save_password":  False,
+        "remote_client_autoconnect":    False,
+        "remote_client_autoretry":      True,
         # destination history
-        "dest_history":         [],
+        "dest_history":                 [],
     }
     if CONFIG_FILE.exists():
         try:
@@ -389,13 +393,40 @@ class SettingsPopup(ctk.CTkToplevel):
         self._rclient_user_e.insert(0, self._settings.get("remote_client_user", ""))
         self._rclient_user_e.pack(side="left")
 
-        # Password (never stored — entered each time for security)
+        # Password — optionally saved (local network use)
         rc4 = ctk.CTkFrame(client_frame, fg_color="transparent")
         rc4.pack(fill="x", padx=14, pady=(0, 4))
         ctk.CTkLabel(rc4, text="Password:", width=130, anchor="w").pack(side="left")
         self._rclient_pass_e = ctk.CTkEntry(rc4, width=180, show="•",
-                                            placeholder_text="Not saved — enter each time")
+                                            placeholder_text="Enter password")
+        saved_pwd = self._settings.get("remote_client_password", "")
+        if saved_pwd:
+            self._rclient_pass_e.insert(0, saved_pwd)
         self._rclient_pass_e.pack(side="left")
+
+        # Save password checkbox
+        self._rclient_savepwd_var = ctk.BooleanVar(
+            value=self._settings.get("remote_client_save_password", False))
+        ctk.CTkCheckBox(rc4, text="Save password",
+                        variable=self._rclient_savepwd_var,
+                        font=ctk.CTkFont(size=11),
+                        width=20).pack(side="left", padx=(10, 0))
+
+        # Auto-connect on startup + auto-retry row
+        rc4b = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rc4b.pack(fill="x", padx=14, pady=(0, 4))
+        self._rclient_autoconnect_var = ctk.BooleanVar(
+            value=self._settings.get("remote_client_autoconnect", False))
+        ctk.CTkCheckBox(rc4b, text="Auto-connect on startup",
+                        variable=self._rclient_autoconnect_var,
+                        font=ctk.CTkFont(size=11),
+                        width=20).pack(side="left")
+        self._rclient_autoretry_var = ctk.BooleanVar(
+            value=self._settings.get("remote_client_autoretry", True))
+        ctk.CTkCheckBox(rc4b, text="Auto-retry on disconnect",
+                        variable=self._rclient_autoretry_var,
+                        font=ctk.CTkFont(size=11),
+                        width=20).pack(side="left", padx=(16, 0))
 
         # Default remote destination
         rc5 = ctk.CTkFrame(client_frame, fg_color="transparent")
@@ -603,7 +634,28 @@ class SettingsPopup(ctk.CTkToplevel):
             self._settings["remote_client_port"] = port
             self._settings["remote_client_user"] = user
             self._settings["remote_client_dest"] = self._rclient_dest_e.get().strip()
+            # Save password if option enabled
+            if getattr(self, "_rclient_savepwd_var", None) and self._rclient_savepwd_var.get():
+                self._settings["remote_client_password"] = pwd
+                self._settings["remote_client_save_password"] = True
             self.master._remote_client = c
+
+            # Start heartbeat — auto-reconnect on disconnect
+            def _on_disconnect():
+                self.master.ui(self.master._update_remote_status_bar)
+                print("[remote-client] Heartbeat: disconnected")
+
+            def _on_reconnect():
+                self.master.ui(self.master._update_remote_status_bar)
+                print("[remote-client] Heartbeat: reconnected")
+
+            c.start_heartbeat(
+                on_disconnect=_on_disconnect,
+                on_reconnect=_on_reconnect,
+                interval=15,
+                max_retries=0,   # infinite retries
+            )
+
             self.master._update_remote_status_bar()
             self._refresh_client_badge()
         else:
@@ -754,6 +806,18 @@ class SettingsPopup(ctk.CTkToplevel):
                 self._rclient_port_e.get().strip() or "9988")
         except (ValueError, AttributeError):
             pass
+        # Save password if checkbox is checked
+        if getattr(self, "_rclient_savepwd_var", None):
+            save_pwd = self._rclient_savepwd_var.get()
+            self._settings["remote_client_save_password"] = save_pwd
+            if save_pwd and getattr(self, "_rclient_pass_e", None):
+                self._settings["remote_client_password"] = self._rclient_pass_e.get()
+            elif not save_pwd:
+                self._settings["remote_client_password"] = ""
+        if getattr(self, "_rclient_autoconnect_var", None):
+            self._settings["remote_client_autoconnect"] = self._rclient_autoconnect_var.get()
+        if getattr(self, "_rclient_autoretry_var", None):
+            self._settings["remote_client_autoretry"] = self._rclient_autoretry_var.get()
 
         save_settings(self._settings)
         self._on_save()
@@ -763,43 +827,119 @@ class SettingsPopup(ctk.CTkToplevel):
 
 class _RemoteBrowsePopup(ctk.CTkToplevel):
     """
-    Modal file browser that navigates the remote server's filesystem via /browse.
+    Modal file browser — can navigate either the remote server filesystem
+    (via /browse) or the local filesystem, switchable via a toggle.
+
+    Navigation:
+      - Single click on a folder  → select it as destination (highlighted)
+      - Double click on a folder  → enter it
+      - ⬆ Up button               → go to parent directory
+      - ✔ Select this folder      → confirm and close
+
+    Large directories are paginated (PAGE_SIZE entries at a time) to avoid
+    freezing the UI when a folder contains thousands of files.
     """
+
+    PAGE_SIZE = 200   # max entries rendered at once
+
     def __init__(self, master, client, callback):
         super().__init__(master)
-        self.title("Browse remote server")
-        self.geometry("520x460")
+        self.title("Browse filesystem")
+        self.geometry("540x520")
         self.resizable(True, True)
         self.grab_set()
 
-        self._client   = client
-        self._callback = callback
-        self._current  = ""   # current path on server ("" = root/drives)
+        self._client      = client
+        self._callback    = callback
+        self._current     = ""      # current browsed path
+        self._parent      = None    # parent path (None = at root)
+        self._selected    = ""      # single-clicked folder
+        self._all_entries = []      # full list from server or local
+        self._page        = 0       # current page index
+        self._last_click_time  = 0.0
+        self._last_click_path  = ""
+        self._mode        = "remote" if client else "local"  # "remote" | "local"
 
-        # ── Header ────────────────────────────────────────────────────────────
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=12, pady=(10, 4))
-        ctk.CTkLabel(hdr, text="📂 Remote Filesystem",
-                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        # ── Mode toggle bar ───────────────────────────────────────────────────
+        toggle_bar = ctk.CTkFrame(self, fg_color="#1a1a1a")
+        toggle_bar.pack(fill="x", padx=0, pady=0)
 
-        # Current path label
+        ctk.CTkLabel(toggle_bar, text="Browse:",
+                     font=ctk.CTkFont(size=11), text_color="#666").pack(
+            side="left", padx=(12, 6), pady=6)
+
+        self._mode_var = ctk.StringVar(value=self._mode)
+
+        self._btn_remote = ctk.CTkButton(
+            toggle_bar, text="🖥 Remote server", width=130, height=26,
+            font=ctk.CTkFont(size=11),
+            fg_color="#1f6aa5" if self._mode == "remote" else "transparent",
+            border_width=1, border_color="#1f6aa5" if self._mode == "remote" else "#333",
+            state="normal" if client else "disabled",
+            command=lambda: self._switch_mode("remote"))
+        self._btn_remote.pack(side="left", padx=(0, 4), pady=6)
+
+        self._btn_local = ctk.CTkButton(
+            toggle_bar, text="💻 This PC", width=100, height=26,
+            font=ctk.CTkFont(size=11),
+            fg_color="#1f6aa5" if self._mode == "local" else "transparent",
+            border_width=1, border_color="#1f6aa5" if self._mode == "local" else "#333",
+            command=lambda: self._switch_mode("local"))
+        self._btn_local.pack(side="left", pady=6)
+
+        # ── Navigation bar ────────────────────────────────────────────────────
+        nav = ctk.CTkFrame(self, fg_color="#222222")
+        nav.pack(fill="x", padx=0, pady=0)
+
+        self._up_btn = ctk.CTkButton(
+            nav, text="⬆ Up", width=70, height=28,
+            fg_color="transparent", border_width=1, border_color="#333333",
+            font=ctk.CTkFont(size=12),
+            command=self._go_up, state="disabled")
+        self._up_btn.pack(side="left", padx=(10, 6), pady=6)
+
         self._path_lbl = ctk.CTkLabel(
-            self, text="", text_color="#888888",
-            font=ctk.CTkFont(size=10), anchor="w", wraplength=480)
-        self._path_lbl.pack(fill="x", padx=14, pady=(0, 4))
+            nav, text="", text_color="#888888",
+            font=ctk.CTkFont(size=10), anchor="w")
+        self._path_lbl.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=6)
+
+        # ── Selected destination display ──────────────────────────────────────
+        self._dest_frame = ctk.CTkFrame(self, fg_color="#0d1a0d", corner_radius=0)
+        self._dest_lbl   = ctk.CTkLabel(
+            self._dest_frame, text="No folder selected",
+            text_color="#555555", font=ctk.CTkFont(size=11), anchor="w")
+        self._dest_lbl.pack(fill="x", padx=12, pady=5)
+        self._dest_frame.pack(fill="x", padx=0, pady=0)
 
         # ── Entry list ────────────────────────────────────────────────────────
-        self._scroll = ctk.CTkScrollableFrame(self, height=300)
-        self._scroll.pack(fill="both", expand=True, padx=12, pady=4)
+        self._scroll = ctk.CTkScrollableFrame(self)
+        self._scroll.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ── Pagination bar ────────────────────────────────────────────────────
+        self._pager = ctk.CTkFrame(self, fg_color="#1a1a1a")
+        self._prev_btn = ctk.CTkButton(
+            self._pager, text="◀ Prev", width=90, height=26,
+            fg_color="transparent", border_width=1, border_color="#333",
+            font=ctk.CTkFont(size=11), command=self._prev_page)
+        self._prev_btn.pack(side="left", padx=8, pady=4)
+        self._page_lbl = ctk.CTkLabel(
+            self._pager, text="", text_color="#666", font=ctk.CTkFont(size=11))
+        self._page_lbl.pack(side="left", expand=True)
+        self._next_btn = ctk.CTkButton(
+            self._pager, text="Next ▶", width=90, height=26,
+            fg_color="transparent", border_width=1, border_color="#333",
+            font=ctk.CTkFont(size=11), command=self._next_page)
+        self._next_btn.pack(side="right", padx=8, pady=4)
+        # pager shown only when needed
 
         # ── Footer ────────────────────────────────────────────────────────────
         foot = ctk.CTkFrame(self, fg_color="#2b2b2b")
         foot.pack(fill="x", padx=0, pady=0)
 
         self._select_btn = ctk.CTkButton(
-            foot, text="✔ Select this folder", width=160,
+            foot, text="✔ Select this folder", width=170,
             fg_color="#1f6aa5", state="disabled",
-            command=self._select_current)
+            command=self._confirm_selection)
         self._select_btn.pack(side="left", padx=12, pady=8)
 
         ctk.CTkButton(foot, text="Cancel", width=100,
@@ -808,54 +948,207 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
 
         self._navigate("")
 
-    def _navigate(self, path: str):
-        """Fetches and displays folder contents for the given path."""
-        self._path_lbl.configure(text="Loading…")
-        self.update()
+    # ── Mode switch ────────────────────────────────────────────────────────────
 
-        data = self._client.browse(path)
-        if data is None:
-            self._path_lbl.configure(text="⚠ Could not reach server", text_color="#cc4444")
+    def _switch_mode(self, mode: str):
+        """Switches between remote and local filesystem browsing."""
+        if mode == self._mode:
             return
+        self._mode    = mode
+        self._current = ""
+        self._parent  = None
+        self._selected = ""
+        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
+        self._dest_frame.configure(fg_color="#0d1a0d")
+        self._select_btn.configure(state="disabled")
 
-        self._current = data.get("path", path)
-        display_path  = self._current or "(Drives)"
-        self._path_lbl.configure(text=display_path, text_color="#888888")
+        # Update toggle button styles
+        self._btn_remote.configure(
+            fg_color="#1f6aa5" if mode == "remote" else "transparent",
+            border_color="#1f6aa5" if mode == "remote" else "#333")
+        self._btn_local.configure(
+            fg_color="#1f6aa5" if mode == "local" else "transparent",
+            border_color="#1f6aa5" if mode == "local" else "#333")
 
-        # Enable "Select" only when inside a real folder
-        self._select_btn.configure(
-            state="normal" if self._current else "disabled")
+        self._navigate("")
 
-        # Clear previous entries
+    # ── Navigation ─────────────────────────────────────────────────────────────
+
+    def _navigate(self, path: str):
+        """Fetches folder contents — remote via API, local via os.listdir."""
+        self._path_lbl.configure(text="Loading…", text_color="#888888")
+        self._up_btn.configure(state="disabled")
         for w in self._scroll.winfo_children():
             w.destroy()
 
-        parent = data.get("parent")
-        if parent is not None:
-            self._make_entry("⬆  ..", parent, is_dir=True, is_parent=True)
+        if self._mode == "local":
+            self._navigate_local(path)
+        else:
+            import threading as _th
+            def _fetch():
+                data = self._client.browse(path)
+                self.after(0, lambda: self._on_data(data, path))
+            _th.Thread(target=_fetch, daemon=True, name="BrowseFetch").start()
 
-        entries = data.get("entries", [])
-        dirs  = [e for e in entries if e["is_dir"]]
-        files = [e for e in entries if not e["is_dir"]]
+    def _navigate_local(self, path: str):
+        """Builds folder data from the local filesystem."""
+        import os as _os, sys as _sys
 
-        for e in dirs:
-            self._make_entry(f"📁  {e['name']}", e["path"], is_dir=True)
-        for e in files:
-            self._make_entry(f"    {e['name']}", e["path"], is_dir=False)
+        if not path:
+            # Root — list drives on Windows, "/" on Unix
+            if _sys.platform == "win32":
+                import string
+                entries = [
+                    {"name": f"{d}:\\", "path": f"{d}:\\", "is_dir": True}
+                    for d in string.ascii_uppercase
+                    if _os.path.exists(f"{d}:\\")
+                ]
+                data = {"path": "", "parent": None, "entries": entries}
+            else:
+                path = "/"
+                data = self._build_local_data("/")
+        else:
+            data = self._build_local_data(path)
 
-    def _make_entry(self, label: str, path: str, is_dir: bool, is_parent: bool = False):
+        self.after(0, lambda: self._on_data(data, path))
+
+    def _build_local_data(self, path: str) -> dict:
+        """Reads a local directory and returns data in the same format as /browse."""
+        import os as _os, pathlib as _pl
+        p = _pl.Path(path)
+        parent = str(p.parent) if str(p.parent) != str(p) else None
+
+        entries = []
+        try:
+            for name in sorted(_os.listdir(path)):
+                full = _os.path.join(path, name)
+                try:
+                    is_dir = _os.path.isdir(full)
+                    entries.append({"name": name, "path": full, "is_dir": is_dir})
+                except PermissionError:
+                    pass
+        except PermissionError:
+            pass
+        return {"path": path, "parent": parent, "entries": entries}
+
+    def _on_data(self, data, requested_path: str):
+        """Called on UI thread once server data is available."""
+        if not self.winfo_exists():
+            return
+
+        if data is None:
+            self._path_lbl.configure(
+                text="⚠ Could not reach server", text_color="#cc4444")
+            return
+
+        self._current     = data.get("path", requested_path)
+        self._parent      = data.get("parent")
+        self._all_entries = data.get("entries", [])
+        self._page        = 0
+
+        # Update nav bar
+        self._path_lbl.configure(
+            text=self._current or "(Drives)", text_color="#888888")
+        self._up_btn.configure(
+            state="normal" if (self._parent is not None or self._current) else "disabled")
+
+        # Auto-select current folder as destination (user navigated here intentionally)
+        if self._current:
+            short = self._current if len(self._current) <= 55 else "…" + self._current[-52:]
+            self._dest_lbl.configure(text=f"📁 {short}", text_color="#7aaa7a")
+            self._dest_frame.configure(fg_color="#0d1f0d")
+            self._select_btn.configure(state="normal")
+        else:
+            self._dest_lbl.configure(text="No folder selected", text_color="#555555")
+            self._dest_frame.configure(fg_color="#0d1a0d")
+            self._select_btn.configure(state="disabled")
+
+        self._render_page()
+
+    def _render_page(self):
+        """Renders PAGE_SIZE entries for the current page."""
+        # Clear
+        for w in self._scroll.winfo_children():
+            w.destroy()
+
+        dirs  = [e for e in self._all_entries if e["is_dir"]]
+        files = [e for e in self._all_entries if not e["is_dir"]]
+        ordered = dirs + files
+
+        total      = len(ordered)
+        page_count = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        start      = self._page * self.PAGE_SIZE
+        end        = min(start + self.PAGE_SIZE, total)
+        page_items = ordered[start:end]
+
+        for entry in page_items:
+            self._make_entry(entry)
+
+        # Pagination bar
+        if page_count > 1:
+            self._page_lbl.configure(
+                text=f"Page {self._page + 1} / {page_count}  ({total} items)")
+            self._prev_btn.configure(state="normal" if self._page > 0 else "disabled")
+            self._next_btn.configure(state="normal" if self._page < page_count - 1 else "disabled")
+            self._pager.pack(fill="x", padx=0, before=self._scroll)
+        else:
+            self._pager.pack_forget()
+
+    def _make_entry(self, entry: dict):
+        """Creates one row. Single click = select, double click = enter (dirs only)."""
+        is_dir = entry["is_dir"]
+        path   = entry["path"]
+        name   = entry["name"]
+        label  = f"📁  {name}" if is_dir else f"    {name}"
+
         btn = ctk.CTkButton(
             self._scroll, text=label, anchor="w",
             fg_color="transparent",
-            hover_color="#2a3a4a" if is_dir else "#1e1e1e",
-            text_color="#cccccc" if is_dir else "#777777",
+            hover_color="#1a2a3a" if is_dir else "#1a1a1a",
+            text_color="#cccccc" if is_dir else "#555555",
             font=ctk.CTkFont(size=12),
             height=28,
-            command=(lambda p=path: self._navigate(p)) if is_dir else (lambda: None),
+            command=lambda p=path, d=is_dir: self._on_click(p, d),
         )
         btn.pack(fill="x", padx=4, pady=1)
 
-    def _select_current(self):
-        if self._current:
-            self._callback(self._current)
+        # Highlight if this is the selected folder
+        if is_dir and path == self._selected:
+            btn.configure(fg_color="#1a3a1a", border_width=1, border_color="#2a5a2a")
+
+    def _on_click(self, path: str, is_dir: bool):
+        """Click on a folder → enter it immediately. Select button confirms current folder."""
+        if not is_dir:
+            return
+        # Reset selection when navigating
+        self._selected = ""
+        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
+        self._dest_frame.configure(fg_color="#0d1a0d")
+        self._select_btn.configure(state="disabled")
+        self._navigate(path)
+
+    def _go_up(self):
+        target = self._parent if self._parent is not None else ""
+        self._selected = ""
+        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
+        self._dest_frame.configure(fg_color="#0d1a0d")
+        self._select_btn.configure(state="disabled")
+        self._navigate(target)
+
+    def _prev_page(self):
+        if self._page > 0:
+            self._page -= 1
+            self._render_page()
+
+    def _next_page(self):
+        total      = len(self._all_entries)
+        page_count = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        if self._page < page_count - 1:
+            self._page += 1
+            self._render_page()
+
+    def _confirm_selection(self):
+        path = self._current
+        if path:
+            self._callback(path)
             self.destroy()
