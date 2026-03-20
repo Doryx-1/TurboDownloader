@@ -13,7 +13,7 @@ customtkinter>=5.2.0        # UI framework
 requests>=2.31.0            # HTTP downloads
 beautifulsoup4>=4.12.0      # HTML crawl / directory parsing
 Pillow>=10.0.0              # Image handling (CTk thumbnails)
-
+pystray>=0.24.0             # System tray icon
 
 # ── yt-dlp support (optional but recommended) ─
 yt-dlp>=2024.1.1            # Streaming downloads (YouTube, Vimeo, etc.)

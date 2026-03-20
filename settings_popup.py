@@ -859,6 +859,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         self._last_click_time  = 0.0
         self._last_click_path  = ""
         self._mode        = "remote" if client else "local"  # "remote" | "local"
+        self._fetch_gen   = 0       # incremented on each navigate — stale results are ignored
 
         # ── Mode toggle bar ───────────────────────────────────────────────────
         toggle_bar = ctk.CTkFrame(self, fg_color="#1a1a1a")
@@ -911,11 +912,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         self._dest_lbl.pack(fill="x", padx=12, pady=5)
         self._dest_frame.pack(fill="x", padx=0, pady=0)
 
-        # ── Entry list ────────────────────────────────────────────────────────
-        self._scroll = ctk.CTkScrollableFrame(self)
-        self._scroll.pack(fill="both", expand=True, padx=0, pady=0)
-
-        # ── Pagination bar ────────────────────────────────────────────────────
+        # ── Pagination bar (created before scroll so pack order is correct) ──
         self._pager = ctk.CTkFrame(self, fg_color="#1a1a1a")
         self._prev_btn = ctk.CTkButton(
             self._pager, text="◀ Prev", width=90, height=26,
@@ -930,7 +927,11 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             fg_color="transparent", border_width=1, border_color="#333",
             font=ctk.CTkFont(size=11), command=self._next_page)
         self._next_btn.pack(side="right", padx=8, pady=4)
-        # pager shown only when needed
+        # pager shown only when needed (pack_forget by default)
+
+        # ── Entry list ────────────────────────────────────────────────────────
+        self._scroll = ctk.CTkScrollableFrame(self)
+        self._scroll.pack(fill="both", expand=True, padx=0, pady=0)
 
         # ── Footer ────────────────────────────────────────────────────────────
         foot = ctk.CTkFrame(self, fg_color="#2b2b2b")
@@ -976,26 +977,34 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
 
     def _navigate(self, path: str):
         """Fetches folder contents — remote via API, local via os.listdir."""
+        self._fetch_gen += 1
+        gen = self._fetch_gen
+
         self._path_lbl.configure(text="Loading…", text_color="#888888")
         self._up_btn.configure(state="disabled")
         for w in self._scroll.winfo_children():
             w.destroy()
 
         if self._mode == "local":
-            self._navigate_local(path)
+            # Local is instant — run in thread anyway to keep UI responsive
+            import threading as _th
+            def _fetch_local():
+                self._navigate_local(path, gen)
+            _th.Thread(target=_fetch_local, daemon=True, name="BrowseFetch").start()
         else:
             import threading as _th
             def _fetch():
                 data = self._client.browse(path)
-                self.after(0, lambda: self._on_data(data, path))
+                # Only apply result if this is still the latest navigation
+                if self._fetch_gen == gen:
+                    self.after(0, lambda: self._on_data(data, path))
             _th.Thread(target=_fetch, daemon=True, name="BrowseFetch").start()
 
-    def _navigate_local(self, path: str):
+    def _navigate_local(self, path: str, gen: int = 0):
         """Builds folder data from the local filesystem."""
         import os as _os, sys as _sys
 
         if not path:
-            # Root — list drives on Windows, "/" on Unix
             if _sys.platform == "win32":
                 import string
                 entries = [
@@ -1010,7 +1019,8 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         else:
             data = self._build_local_data(path)
 
-        self.after(0, lambda: self._on_data(data, path))
+        if self._fetch_gen == gen:
+            self.after(0, lambda: self._on_data(data, path))
 
     def _build_local_data(self, path: str) -> dict:
         """Reads a local directory and returns data in the same format as /browse."""
@@ -1071,6 +1081,12 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         for w in self._scroll.winfo_children():
             w.destroy()
 
+        # Reset scroll position to top
+        try:
+            self._scroll._parent_canvas.yview_moveto(0)
+        except Exception:
+            pass
+
         dirs  = [e for e in self._all_entries if e["is_dir"]]
         files = [e for e in self._all_entries if not e["is_dir"]]
         ordered = dirs + files
@@ -1090,7 +1106,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
                 text=f"Page {self._page + 1} / {page_count}  ({total} items)")
             self._prev_btn.configure(state="normal" if self._page > 0 else "disabled")
             self._next_btn.configure(state="normal" if self._page < page_count - 1 else "disabled")
-            self._pager.pack(fill="x", padx=0, before=self._scroll)
+            self._pager.pack(fill="x", padx=0)
         else:
             self._pager.pack_forget()
 

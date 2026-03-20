@@ -430,14 +430,18 @@ class YtdlpPopup(ctk.CTkToplevel):
         y = self._dest_entry.winfo_rooty() + self._dest_entry.winfo_height()
         w = self._dest_entry.winfo_width() + 34
         menu.geometry(f"{w}x{min(len(self._recent_dests) * 36, 220)}+{x}+{y}")
-        menu.grab_set()
+        # NO grab_set() — would block parent window clicks
         scroll = _ctk.CTkScrollableFrame(menu, fg_color="#1e1e1e")
         scroll.pack(fill="both", expand=True)
+
+        def _close_menu(event=None):
+            if menu.winfo_exists():
+                menu.destroy()
 
         def _pick(path):
             self._dest_entry.delete(0, "end")
             self._dest_entry.insert(0, path)
-            menu.destroy()
+            _close_menu()
 
         for path in self._recent_dests:
             display = path if len(path) <= 55 else "…" + path[-52:]
@@ -448,7 +452,17 @@ class YtdlpPopup(ctk.CTkToplevel):
                 height=30,
                 command=lambda p=path: _pick(p),
             ).pack(fill="x", padx=2, pady=1)
-        menu.bind("<FocusOut>", lambda e: menu.destroy() if menu.winfo_exists() else None)
+
+        def _on_click_outside(event):
+            if not menu.winfo_exists():
+                return
+            mx, my = menu.winfo_rootx(), menu.winfo_rooty()
+            mw, mh = menu.winfo_width(), menu.winfo_height()
+            if not (mx <= event.x_root <= mx + mw and my <= event.y_root <= my + mh):
+                _close_menu()
+
+        self.bind("<Button-1>", _on_click_outside, add=True)
+        menu.bind("<Destroy>", lambda e: self.unbind("<Button-1>"))
 
     def _cancel(self):
         if self._canceled:
