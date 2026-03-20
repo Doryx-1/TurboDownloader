@@ -26,6 +26,7 @@ import ytdlp_worker
 from ytdlp_popup import YtdlpPopup
 import ffmpeg_setup
 import remote_server
+import tray as tray_module
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
@@ -101,6 +102,17 @@ class TurboDownloader(ctk.CTk):
         self._start_remote_if_enabled()
 
         self._build_ui()
+
+        # ── Tray icon ─────────────────────────────────────────────────────────
+        self._tray = tray_module.TrayIcon(self)
+        self._tray.start()
+
+        # Close button → minimize to tray instead of quitting
+        self.protocol("WM_DELETE_WINDOW", self._on_close_btn)
+
+        # Start minimized if launched with --minimized flag (startup with Windows)
+        if "--minimized" in sys.argv:
+            self.after(100, self.withdraw)
 
         # Windows taskbar — initialized after _build_ui (needs HWND)
         # Slight delay to let Tk create the window first
@@ -248,6 +260,44 @@ class TurboDownloader(ctk.CTk):
             self._remote_client.disconnect()   # stops heartbeat thread
             self._remote_client = None
         self._update_remote_status_bar()
+
+    # ── Tray / window lifecycle ───────────────────────────────────────────────
+
+    def _on_close_btn(self):
+        """X button — minimize to tray or quit depending on settings."""
+        if self._settings.get("minimize_to_tray", True):
+            self.withdraw()
+        else:
+            self._tray_quit()
+
+    def _tray_restore(self):
+        """Restore window from tray."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _tray_quit(self):
+        """Quit completely — stop server, cleanup, destroy."""
+        try:
+            if self._remote_server:
+                self._remote_server.stop()
+            if self._remote_client:
+                self._remote_client.disconnect()
+            self.stop_all_event.set()
+            self._tray.stop()
+        except Exception:
+            pass
+        self.destroy()
+
+    def _show_for_popup(self):
+        """
+        Called when a URL arrives via the extension while TD is minimized.
+        Brings only the popup to front without restoring the full main window.
+        The popup will appear on top of whatever is on screen.
+        """
+        # Just make sure the root window exists so popups can attach to it
+        # Don't deiconify — keep main window hidden if it was hidden
+        self.lift()
 
     def _disconnect_remote(self):
         """Legacy — disconnect whichever is active (used by old code paths)."""
@@ -1698,6 +1748,10 @@ class TurboDownloader(ctk.CTk):
     SCAN_TIMEOUT = 60  # seconds before interrupting the crawl
 
     def start_downloads(self):
+        # If window is hidden (tray), bring popups to front without restoring main window
+        if not self.winfo_viewable():
+            self._show_for_popup()
+
         if not self.download_path:
             # Fallback — ne devrait pas arriver mais sécurité
             import pathlib

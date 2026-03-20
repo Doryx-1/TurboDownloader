@@ -136,34 +136,58 @@ const tabLinks = new Map();
 // Injects URLs into TD's url_box and triggers the native tree_popup.
 // TD comes to the front and the user picks the destination there.
 
+// ── Launch TurboDownloader via custom protocol ───────────────────────────────
+// Used as fallback when the HTTP API is unreachable (TD not running).
+
+function launchViaProcotol(urls) {
+  // Encode all URLs into a single turbodownloader://send?url=...&url=... link
+  const params = urls.map(u => `url=${encodeURIComponent(u)}`).join("&");
+  const link   = `turbodownloader://send?${params}`;
+  // chrome.tabs.create navigates to the protocol URL → Windows launches TD
+  chrome.tabs.create({ url: link, active: false }, tab => {
+    // Close the tab immediately — it was just used to trigger the protocol
+    setTimeout(() => {
+      chrome.tabs.remove(tab.id).catch(() => {});
+    }, 1000);
+  });
+  showNotification(
+    "TurboDownloader is starting… your download will begin shortly.",
+    "success"
+  );
+}
+
 async function sendInteractive(urls) {
   const s     = await getSettings();
+
+  // First attempt — try HTTP API (TD already running)
   const token = await getToken();
-  if (!token) {
-    showNotification("Not connected to TurboDownloader — check settings", "error");
-    return;
+  if (token) {
+    const proto    = await getProto(s.host);
+    const combined = urls.join("\n");
+    try {
+      const r = await fetch(`${proto}://${s.host}:${s.port}/downloads/add_interactive`, {
+        method:  "POST",
+        headers: {
+          "Content-Type":  "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({ url: combined, dest: null }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      showNotification(
+        urls.length === 1
+          ? "Sent to TurboDownloader ✓"
+          : `${urls.length} URLs sent to TurboDownloader ✓`,
+        "success"
+      );
+      return;
+    } catch (e) {
+      console.log("[TurboDL] HTTP failed, falling back to protocol:", e.message);
+    }
   }
-  const proto    = await getProto(s.host);
-  const combined = urls.join("\n");
-  try {
-    const r = await fetch(`${proto}://${s.host}:${s.port}/downloads/add_interactive`, {
-      method:  "POST",
-      headers: {
-        "Content-Type":  "application/json",
-        "Authorization": `Bearer ${token}`,
-      },
-      body: JSON.stringify({ url: combined, dest: null }),
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    showNotification(
-      urls.length === 1
-        ? "Sent to TurboDownloader ✓"
-        : `${urls.length} URLs sent to TurboDownloader ✓`,
-      "success"
-    );
-  } catch (e) {
-    showNotification(`Failed to send: ${e.message}`, "error");
-  }
+
+  // Fallback — TD is not running, launch it via protocol
+  launchViaProcotol(urls);
 }
 
 // ── Context menu ─────────────────────────────────────────────────────────────

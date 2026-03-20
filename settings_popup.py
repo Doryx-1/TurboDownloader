@@ -38,6 +38,7 @@ def load_settings() -> dict:
         "retry_delay":   5,
         "throttle":      0,
         "notifications": True,
+        "minimize_to_tray": True,
         "workers":       10,
         "segments":      4,
         "extensions":    DEFAULT_EXTENSIONS.copy(),
@@ -224,6 +225,37 @@ class SettingsPopup(ctk.CTkToplevel):
         self._notif_var = ctk.BooleanVar(value=self._settings.get("notifications", True))
         ctk.CTkCheckBox(row_notif, text="Enable notifications (requires plyer)",
                         variable=self._notif_var).pack(side="left")
+
+        # ── Section: System ─────────────────────────────────────────────
+        self._section(content, "System",
+                      "Window and startup behaviour.")
+
+        row_sys = ctk.CTkFrame(content, fg_color="transparent")
+        row_sys.pack(fill="x", padx=20, pady=(0, 4))
+
+        # Start with Windows
+        try:
+            import tray as _tray_mod
+            startup_ok = True
+        except ImportError:
+            startup_ok = False
+
+        self._startup_var = ctk.BooleanVar(
+            value=_tray_mod.is_startup_enabled() if startup_ok else False)
+        startup_cb = ctk.CTkCheckBox(
+            row_sys, text="Start with Windows  (launches minimized in tray)",
+            variable=self._startup_var,
+            state="normal" if startup_ok else "disabled")
+        startup_cb.pack(side="left")
+
+        # Minimize to tray on close
+        row_sys2 = ctk.CTkFrame(content, fg_color="transparent")
+        row_sys2.pack(fill="x", padx=20, pady=(0, 8))
+        self._minimize_tray_var = ctk.BooleanVar(
+            value=self._settings.get("minimize_to_tray", True))
+        ctk.CTkCheckBox(row_sys2,
+                        text="Minimize to tray when closing the window",
+                        variable=self._minimize_tray_var).pack(side="left")
 
         # ── Separator ───────────────────────────────────────────────────
         ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
@@ -763,6 +795,16 @@ class SettingsPopup(ctk.CTkToplevel):
 
         # Notifications
         self._settings["notifications"] = self._notif_var.get()
+
+        # System — tray + startup
+        if getattr(self, "_minimize_tray_var", None):
+            self._settings["minimize_to_tray"] = self._minimize_tray_var.get()
+        if getattr(self, "_startup_var", None):
+            try:
+                import tray as _tray_mod
+                _tray_mod.set_startup(self._startup_var.get())
+            except ImportError:
+                pass
 
         # Multipart segments
         self._settings["segments"] = int(round(self._seg_slider.get()))
