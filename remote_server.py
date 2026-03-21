@@ -183,11 +183,7 @@ def verify_password(password: str, hashed: str) -> bool:
 # ── URL validation ────────────────────────────────────────────────────────────
 
 def _validate_urls(raw: str) -> tuple[list[str], str | None]:
-    """
-    Splits newline-separated URLs and validates each scheme.
-    Returns (valid_urls, error_message_or_None).
-    Only http:// and https:// are accepted — blocks file://, ftp://, etc.
-    """
+    """Validates URL schemes — only http/https accepted."""
     from urllib.parse import urlparse as _up
     urls = [u.strip() for u in raw.strip().splitlines() if u.strip()]
     if not urls:
@@ -234,23 +230,19 @@ def verify_token(token: str, settings: dict) -> bool:
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── Local extension token ─────────────────────────────────────────────────────
-# TD generates a short-lived token at startup that the browser extension uses
-# to authenticate against the local server without any user configuration.
-# The token is stored in a temp file and renewed every hour.
 
 import tempfile as _tempfile
 import secrets as _secrets
 
 _LOCAL_TOKEN_FILE = pathlib.Path(_tempfile.gettempdir()) / "turbodownloader.token"
-_LOCAL_TOKEN_TTL  = 3600   # 1 hour
+_LOCAL_TOKEN_TTL  = 3600   # 1 hour in seconds
 
 
 def generate_local_token() -> str:
-    """Generates a new local extension token and writes it to disk."""
+    """Generates a new local token and writes it to a temp file."""
     token = _secrets.token_hex(32)
     try:
-        _LOCAL_TOKEN_FILE.write_text(f"{token}", encoding="utf-8")
-        # Restrict read permissions on Unix
+        _LOCAL_TOKEN_FILE.write_text(token, encoding="utf-8")
         import sys as _sys
         if _sys.platform != "win32":
             import os as _os
@@ -260,18 +252,13 @@ def generate_local_token() -> str:
     return token
 
 
-def read_local_token() -> str:
-    """Reads the current local token from disk."""
-    try:
-        return _LOCAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-
-
 def verify_local_token(token: str) -> bool:
-    """Checks whether the provided token matches the current local token."""
-    stored = read_local_token()
-    return stored and token == stored
+    """Returns True if the token matches the stored local token."""
+    try:
+        stored = _LOCAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        return bool(stored) and token == stored
+    except Exception:
+        return False
 
 
 class RemoteServer:
@@ -295,9 +282,8 @@ class RemoteServer:
         if self._running:
             return True
 
-        # Generate local extension token at startup
+        # Generate local extension token
         self._local_token = generate_local_token()
-        self._start_token_renewal()
 
         if not DEPS_OK:
             msg = f"Remote server cannot start.\nMissing packages: {DEPS_MISSING}\n\nDEPS_OK={DEPS_OK}"
@@ -390,21 +376,6 @@ class RemoteServer:
         except Exception:
             pass  # last resort — already printed above
 
-    def _start_token_renewal(self):
-        """Renews the local extension token every hour in a background thread."""
-        import threading as _th
-        import time as _t
-
-        def _renew():
-            while self._running or not self._running:  # runs until daemon exits
-                _t.sleep(_LOCAL_TOKEN_TTL)
-                if not self._running:
-                    break
-                self._local_token = generate_local_token()
-                print("[remote] Local extension token renewed")
-
-        _th.Thread(target=_renew, daemon=True, name="TokenRenewal").start()
-
     def stop(self):
         """Gracefully shuts down the server."""
         if self._server and self._running:
@@ -422,6 +393,9 @@ class RemoteServer:
         from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Body, Request
         from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
         from fastapi.middleware.cors import CORSMiddleware
+
+        settings = self._settings
+        app_ref  = self._app_ref
 
         api = FastAPI(title="TurboDownloader Remote API", version="1.0")
 
@@ -441,8 +415,6 @@ class RemoteServer:
         )
 
         bearer   = HTTPBearer(auto_error=False)
-        settings = self._settings
-        app_ref  = self._app_ref
 
         # ── Auth dependency ───────────────────────────────────────────────────
 
@@ -479,66 +451,44 @@ class RemoteServer:
 
         @api.get("/local-token")
         def get_local_token(request: Request):
-            """
-            Returns the current local extension token.
-            Only accessible from localhost — rejects all other origins.
-            Used by the browser extension to authenticate without user config.
-            """
-            client_ip = request.client.host if request.client else ""
-            if client_ip not in ("127.0.0.1", "::1", "localhost"):
-                raise HTTPException(status_code=403,
-                                    detail="Local access only")
-            return {"token": self._local_token, "ttl": _LOCAL_TOKEN_TTL}
-
-        @api.post("/auth/local")
-        def auth_local(request: Request,
-                       body: dict = Body(...)):
-            """
-            Authenticates the browser extension using the local token.
-            Returns a short-lived JWT for subsequent API calls.
-            Only accessible from localhost.
-            """
+            """Returns local extension token — localhost only, no auth required."""
             client_ip = request.client.host if request.client else ""
             if client_ip not in ("127.0.0.1", "::1", "localhost"):
                 raise HTTPException(status_code=403, detail="Local access only")
-            provided = body.get("token", "")
-            if not verify_local_token(provided):
+            return {"token": self._local_token, "ttl": _LOCAL_TOKEN_TTL}
+
+        @api.post("/auth/local")
+        def auth_local(request: Request, body: dict = Body(...)):
+            """Exchanges local token for a JWT — localhost only."""
+            client_ip = request.client.host if request.client else ""
+            if client_ip not in ("127.0.0.1", "::1", "localhost"):
+                raise HTTPException(status_code=403, detail="Local access only")
+            if not verify_local_token(body.get("token", "")):
                 raise HTTPException(status_code=401, detail="Invalid local token")
             return {"token": create_token(settings), "expires_in_h": TOKEN_TTL_H}
 
-        # Brute-force tracking: {ip: [timestamp, ...]}
+        # Brute-force tracking per IP
         _fail_log: dict = {}
-        _FAIL_WINDOW  = 60    # seconds to look back
-        _FAIL_MAX     = 10    # max attempts before lockout
-        _LOCKOUT_TIME = 30    # seconds of forced delay after lockout
+        _FAIL_WINDOW  = 60
+        _FAIL_MAX     = 10
+        _LOCKOUT_TIME = 30
 
         @api.post("/auth/login")
-        def login(req: LoginRequest = Body(...),
-                  request: Request = None):
+        def login(req: LoginRequest = Body(...), request: Request = None):
             import time as _t
             now = _t.time()
             ip  = request.client.host if request and request.client else "unknown"
-
-            # Clean old entries for this IP
-            attempts = _fail_log.get(ip, [])
-            attempts = [ts for ts in attempts if now - ts < _FAIL_WINDOW]
-
+            attempts = [ts for ts in _fail_log.get(ip, []) if now - ts < _FAIL_WINDOW]
             if len(attempts) >= _FAIL_MAX:
-                # Progressive delay — makes automated brute-force impractical
                 _t.sleep(_LOCKOUT_TIME)
-                raise HTTPException(status_code=429,
-                                    detail="Too many failed attempts — wait and retry")
-
+                raise HTTPException(status_code=429, detail="Too many attempts — wait and retry")
             stored_user = settings.get("remote_username", "")
             stored_hash = settings.get("remote_password_hash", "")
             if req.username != stored_user or not verify_password(req.password, stored_hash):
                 attempts.append(now)
                 _fail_log[ip] = attempts
-                # Small delay even on first failure — slows scripted attacks
                 _t.sleep(min(0.5 * len(attempts), 5.0))
                 raise HTTPException(status_code=401, detail="Bad credentials")
-
-            # Success — clear fail log for this IP
             _fail_log.pop(ip, None)
             return {"token": create_token(settings), "expires_in_h": TOKEN_TTL_H}
 
@@ -575,7 +525,6 @@ class RemoteServer:
             urls, err = _validate_urls(req.url)
             if err:
                 raise HTTPException(status_code=400, detail=err)
-
             def _inject():
                 try:
                     workers = int(app_ref._settings.get("workers", 10))
@@ -733,16 +682,10 @@ class RemoteServer:
                     items = sorted(it, key=lambda e: e.name)
                 for entry in items:
                     try:
-                        # follow_symlinks=False prevents traversal via symlinks
-                        is_dir = entry.is_dir(follow_symlinks=False)
-                        # Skip symlinks entirely — they could point anywhere
                         if entry.is_symlink():
-                            continue
-                        entries.append({
-                            "name":   entry.name,
-                            "path":   entry.path,
-                            "is_dir": is_dir,
-                        })
+                            continue   # skip symlinks — could point anywhere
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        entries.append({"name": entry.name, "path": entry.path, "is_dir": is_dir})
                     except PermissionError:
                         pass
             except PermissionError:
@@ -845,6 +788,7 @@ class RemoteClient:
             return False, "httpx package missing"
 
         try:
+            print(f"[remote-client] Connecting to {self._base}...")
             r = self._httpx.post(
                 f"{self._base}/auth/login",
                 json={"username": self._user, "password": self._pass},
