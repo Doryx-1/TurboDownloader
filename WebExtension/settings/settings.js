@@ -10,6 +10,9 @@
     ".exe", ".msi", ".dmg", ".deb", ".pdf", ".epub",
   ];
 
+  // ── Migrate old storage keys (host/port/username/password no longer used) ──
+  await chrome.storage.local.remove(["host", "port", "username", "password"]);
+
   // ── Load settings ─────────────────────────────────────────────────────────
 
   const stored = await chrome.storage.local.get({

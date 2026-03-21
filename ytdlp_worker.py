@@ -318,11 +318,13 @@ def run(idx: int, app) -> None:
 
     if audio_only:
         if has_ffmpeg:
-            # ffmpeg available → download bestaudio and convert to mp3
-            fmt = "bestaudio/best"
+            # Force audio-only stream — never match a video format
+            # bestaudio picks the best audio-only stream (opus/m4a/webm)
+            # FFmpegExtractAudio then converts it to mp3
+            fmt = "bestaudio"
         else:
-            # No ffmpeg → prefer m4a (natively playable), fallback to best audio
-            fmt = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
+            # No ffmpeg → prefer natively playable formats
+            fmt = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
     elif format_id:
         # Specific resolution chosen in popup
         fmt = f"{format_id}+bestaudio/{format_id}" if has_ffmpeg else format_id
@@ -346,12 +348,16 @@ def run(idx: int, app) -> None:
         "noprogress":     False,
     }
     if audio_only and has_ffmpeg:
-        # Convert to mp3 320kbps via ffmpeg postprocessor
+        # FFmpegExtractAudio converts the downloaded audio stream to mp3
+        # keepvideo=False ensures the original file is deleted after conversion
         ydl_opts["postprocessors"] = [{
             "key":              "FFmpegExtractAudio",
             "preferredcodec":   "mp3",
             "preferredquality": "320",
         }]
+        ydl_opts["keepvideo"] = False
+        # Never set merge_output_format in audio-only mode — it would override
+        # the FFmpegExtractAudio postprocessor and produce MKV instead of MP3
     elif has_ffmpeg:
         ydl_opts["merge_output_format"] = "mkv"
     else:
@@ -375,6 +381,12 @@ def run(idx: int, app) -> None:
             # Update row name with the real video title
             if info:
                 final_name = ydl.prepare_filename(info)
+                # For audio-only with ffmpeg: postprocessor renames to .mp3
+                # prepare_filename returns the pre-conversion extension (.webm/.m4a)
+                # so we must override it manually
+                if audio_only and has_ffmpeg:
+                    base = os.path.splitext(final_name)[0]
+                    final_name = base + ".mp3"
                 it.filename  = os.path.basename(final_name)
                 it.dest_path = final_name
                 if idx in app.rows:

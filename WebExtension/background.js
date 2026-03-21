@@ -186,8 +186,12 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const s = await getSettings();
   if (!s.intercept) return;
 
-  const ext = item.filename?.split(".").pop()?.toLowerCase();
-  if (!ext || !s.extensions.includes(`.${ext}`)) return;
+  // item.filename is empty at creation — check url instead
+  try {
+    const path = new URL(item.url).pathname.toLowerCase();
+    const ext  = "." + path.split(".").pop().split("?")[0];
+    if (!ext || !s.extensions.includes(ext)) return;
+  } catch { return; }
 
   chrome.downloads.cancel(item.id);
   await sendInteractive([item.url]);
@@ -195,7 +199,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
 
 // ── Badge: count links on active tab ─────────────────────────────────────────
 
-const tabLinks = new Map();
+const tabLinks     = new Map();   // tabId → count
+const tabLinkData  = new Map();   // tabId → [{url, text}]
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   const count = tabLinks.get(tabId) || 0;
@@ -203,7 +208,10 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.action.setBadgeBackgroundColor({ color: "#1f6aa5", tabId });
 });
 
-chrome.tabs.onRemoved.addListener(tabId => tabLinks.delete(tabId));
+chrome.tabs.onRemoved.addListener(tabId => {
+  tabLinks.delete(tabId);
+  tabLinkData.delete(tabId);
+});
 
 // ── Messages from content.js / popup / settings ───────────────────────────────
 
@@ -216,11 +224,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
 
-      case "LINK_COUNT": {
+      case "LINKS_FOUND": {
         const tabId = sender.tab?.id;
         if (tabId != null) {
-          tabLinks.set(tabId, msg.count);
-          chrome.action.setBadgeText({ text: msg.count > 0 ? String(msg.count) : "", tabId });
+          const links = msg.links || [];
+          tabLinks.set(tabId, links.length);
+          tabLinkData.set(tabId, links);
+          chrome.action.setBadgeText({ text: links.length > 0 ? String(links.length) : "", tabId });
           chrome.action.setBadgeBackgroundColor({ color: "#1f6aa5", tabId });
         }
         break;
@@ -243,16 +253,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       case "GET_LINKS": {
-        // Content script handles this — just relay
-        try {
-          const results = await chrome.scripting.executeScript({
-            target: { tabId: msg.tabId },
-            func:   () => window.__turboDLLinks || [],
-          });
-          sendResponse({ links: results?.[0]?.result || [] });
-        } catch {
-          sendResponse({ links: [] });
-        }
+        sendResponse({ links: tabLinkData.get(msg.tabId) || [] });
         break;
       }
 
