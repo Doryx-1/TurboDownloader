@@ -397,12 +397,8 @@ class RemoteServer:
         def login(req: LoginRequest = Body(...)):
             stored_user = settings.get("remote_username", "")
             stored_hash = settings.get("remote_password_hash", "")
-            print(f"[remote-server] Login attempt — received user: '{req.username}', stored user: '{stored_user}'")
-            print(f"[remote-server] Has password hash: {bool(stored_hash)}")
             if req.username != stored_user or not verify_password(req.password, stored_hash):
-                print(f"[remote-server] Auth FAILED")
                 raise HTTPException(status_code=401, detail="Bad credentials")
-            print(f"[remote-server] Auth OK")
             return {"token": create_token(settings), "expires_in_h": TOKEN_TTL_H}
 
         @api.get("/status")
@@ -692,8 +688,6 @@ class RemoteClient:
             return False, "httpx package missing"
 
         try:
-            print(f"[remote-client] Connecting to {self._base}/auth/login")
-            print(f"[remote-client] Username: '{self._user}', Password length: {len(self._pass)}")
             r = self._httpx.post(
                 f"{self._base}/auth/login",
                 json={"username": self._user, "password": self._pass},
@@ -701,7 +695,6 @@ class RemoteClient:
                 verify=False,
                 timeout=8,
             )
-            print(f"[remote-client] Status: {r.status_code}")
             if r.status_code == 200:
                 self._token   = r.json()["token"]
                 self._headers = {

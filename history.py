@@ -1,5 +1,6 @@
 import json
 import pathlib
+import threading
 from datetime import datetime
 
 import customtkinter as ctk
@@ -15,6 +16,7 @@ class HistoryManager:
     """Thread-safe read/write of the JSON history file."""
 
     def __init__(self):
+        self._lock    = threading.Lock()
         self._entries: list[dict] = self._load()
 
     def _load(self) -> list:
@@ -44,17 +46,20 @@ class HistoryManager:
             "duration_s": round(duration_s, 1),
             "date_iso":   datetime.now().isoformat(timespec="seconds"),
         }
-        self._entries.insert(0, entry)          # most recent first
-        if len(self._entries) > MAX_ENTRIES:
-            self._entries = self._entries[:MAX_ENTRIES]
-        self._save()
+        with self._lock:
+            self._entries.insert(0, entry)
+            if len(self._entries) > MAX_ENTRIES:
+                self._entries = self._entries[:MAX_ENTRIES]
+            self._save()
 
     def get_entries(self) -> list[dict]:
-        return list(self._entries)
+        with self._lock:
+            return list(self._entries)
 
     def clear(self):
-        self._entries = []
-        self._save()
+        with self._lock:
+            self._entries = []
+            self._save()
 
 
 # ─────────────────────────────────────────────────────────────── Popup

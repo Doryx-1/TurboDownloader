@@ -68,6 +68,7 @@ class TurboDownloader(ctk.CTk):
         self.download_path: Optional[str] = None  # resolved at start time
         self.items: dict[int, DownloadItem] = {}  # idx → item (no gaps)
         self._next_idx: int = 0                    # next index to assign
+        self._items_lock = threading.Lock()         # protects self.items
         self.rows: dict[int, DownloadRow] = {}
         self.executor: Optional[ThreadPoolExecutor] = None
         self.stop_all_event = threading.Event()
@@ -959,9 +960,7 @@ class TurboDownloader(ctk.CTk):
 
         def _remote_pause():
             si = self._shadow_rows.get(shadow_idx, {}).get("server_idx")
-            print(f"[shadow] pause clicked — server_idx={si}")
             if si is None:
-                print("[shadow] server_idx not yet known, ignoring")
                 return
             if not self._remote_client:
                 return
@@ -975,9 +974,7 @@ class TurboDownloader(ctk.CTk):
 
         def _remote_cancel():
             si = self._shadow_rows.get(shadow_idx, {}).get("server_idx")
-            print(f"[shadow] cancel clicked — server_idx={si}")
             if si is None:
-                print("[shadow] server_idx not yet known, ignoring")
                 return
             if not self._remote_client:
                 return
@@ -986,7 +983,6 @@ class TurboDownloader(ctk.CTk):
 
         def _remote_remove():
             si = self._shadow_rows.get(shadow_idx, {}).get("server_idx")
-            print(f"[shadow] remove clicked — server_idx={si}")
             if si is not None and self._remote_client:
                 threading.Thread(target=lambda: self._remote_client.remove(si),
                                  daemon=True).start()
@@ -1025,8 +1021,9 @@ class TurboDownloader(ctk.CTk):
         self._refresh_filter_counts()
 
     def cancel_one(self, idx: int):
-        if idx in self.items:
-            it = self.items[idx]
+        with self._items_lock:
+            it = self.items.get(idx)
+        if it is not None:
             it.cancel_event.set()
             row = self.rows.get(idx)
             if row and it.state in ("waiting", "downloading"):
@@ -1129,12 +1126,13 @@ class TurboDownloader(ctk.CTk):
         row = self.rows.get(idx)
         if not row:
             return
-        it = self.items[idx]
-        if it.state not in ("done", "error", "canceled", "skipped"):
-            return
+        with self._items_lock:
+            it = self.items.get(idx)
+            if it is None or it.state not in ("done", "error", "canceled", "skipped"):
+                return
+            del self.items[idx]
         row.frame.destroy()
         del self.rows[idx]
-        del self.items[idx]
         self._refresh_filter_counts()
 
     def clear_finished(self):
@@ -2196,6 +2194,9 @@ class TurboDownloader(ctk.CTk):
                     raise RuntimeError("ui_call timeout during row creation")
                 # Yield briefly so the UI can repaint between chunks
                 time.sleep(0.01)
+            # Shutdown previous executor before creating a new one (fix resource leak)
+            if self.executor is not None:
+                self.executor.shutdown(wait=False, cancel_futures=False)
             self.executor = ThreadPoolExecutor(max_workers=workers)
 
             batch_set    = set(new_indices)
@@ -2294,6 +2295,7 @@ class TurboDownloader(ctk.CTk):
             if it.state in ("waiting", "downloading"):
                 it.cancel_event.set()
         ex = self.executor
+        self.executor = None   # prevent reuse after stop
         if ex:
             try:
                 ex.shutdown(wait=False, cancel_futures=False)
