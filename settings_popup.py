@@ -84,128 +84,158 @@ def save_settings(settings: dict):
         print(f"[settings] save error: {e}")
 
 
+def _center_on_master(window, master):
+    """Centers a Toplevel window on its master after geometry is set."""
+    window.update_idletasks()
+    mw = master.winfo_width()
+    mh = master.winfo_height()
+    mx = master.winfo_rootx()
+    my = master.winfo_rooty()
+    ww = window.winfo_width()
+    wh = window.winfo_height()
+    x  = mx + (mw - ww) // 2
+    y  = my + (mh - wh) // 2
+    # Keep on screen
+    x  = max(0, x)
+    y  = max(0, y)
+    window.geometry(f"+{x}+{y}")
+
+
 class SettingsPopup(ctk.CTkToplevel):
     """TurboDownloader settings window."""
 
     def __init__(self, master, settings: dict, on_save):
         super().__init__(master)
         self.title("Settings")
-        self.geometry("620x960")
-        self.resizable(False, False)
+        self.geometry("1100x660")
+        self.resizable(True, True)
         self.grab_set()
 
         self._settings = settings
         self._on_save  = on_save
 
         self._build_ui()
+        _center_on_master(self, master)
 
     def _build_ui(self):
-        # ── Scrollable main container ───────────────────────────────────
-        # Layout : titre + sections in un frame central, boutons fixes en bas
-        # grid on self cleanly separates content / buttons
-
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(0, weight=0)   # tab bar
+        self.grid_rowconfigure(1, weight=1)   # content
+        self.grid_rowconfigure(2, weight=0)   # buttons
         self.grid_columnconfigure(0, weight=1)
 
-        # Content area (top) — scrollable for small screens
-        content = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        content.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        # ── Tab bar ───────────────────────────────────────────────────────
+        tab_bar = ctk.CTkFrame(self, fg_color="#1a1a1a", corner_radius=0)
+        tab_bar.grid(row=0, column=0, sticky="ew")
 
-        # Button area (bottom) — fixed
-        bot = ctk.CTkFrame(self, fg_color="#2b2b2b")
-        bot.grid(row=1, column=0, sticky="ew", padx=0, pady=0)
+        self._tab_panels: dict = {}
+        self._tab_btns:   dict = {}
 
-        # ── Title ───────────────────────────────────────────────────────
-        ctk.CTkLabel(content, text="Settings",
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(
-                         anchor="w", padx=20, pady=(16, 12))
+        tabs = [
+            ("general",    "⚙  General"),
+            ("downloads",  "⬇  Downloads"),
+            ("extensions", "📄  Extensions"),
+            ("remote",     "📡  Remote"),
+            ("system",     "🖥  System"),
+        ]
 
-        # ── Section: Temp folder ────────────────────────────────────────
-        self._section(content, "Temporary download folder",
-                      "Files written here during download, then moved to destination.")
+        for key, label in tabs:
+            btn = ctk.CTkButton(
+                tab_bar, text=label, height=34,
+                fg_color="transparent", hover_color="#2a2a2a",
+                corner_radius=0,
+                font=ctk.CTkFont(size=12),
+                command=lambda k=key: self._show_tab(k),
+            )
+            btn.pack(side="left", padx=2, pady=4)
+            self._tab_btns[key] = btn
 
-        row_temp = ctk.CTkFrame(content, fg_color="transparent")
-        row_temp.pack(fill="x", padx=20, pady=(0, 4))
+        # ── Panel container ───────────────────────────────────────────────
+        self._panel_host = ctk.CTkFrame(self, fg_color="transparent")
+        self._panel_host.grid(row=1, column=0, sticky="nsew")
+        self._panel_host.grid_rowconfigure(0, weight=1)
+        self._panel_host.grid_columnconfigure(0, weight=1)
 
-        self._temp_entry = ctk.CTkEntry(row_temp)
-        self._temp_entry.insert(0, self._settings.get("temp_dir", DEFAULT_TEMP_DIR))
-        self._temp_entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        # ── Bottom buttons ────────────────────────────────────────────────
+        bot = ctk.CTkFrame(self, fg_color="#2b2b2b", corner_radius=0)
+        bot.grid(row=2, column=0, sticky="ew")
+        ctk.CTkButton(bot, text="Cancel", width=110, fg_color="#5a5a5a",
+                      command=self.destroy).pack(side="right", padx=(8, 16), pady=10)
+        ctk.CTkButton(bot, text="Save", width=130, fg_color="#1f6aa5",
+                      command=self._save).pack(side="right", pady=10)
 
-        ctk.CTkButton(row_temp, text="Browse…", width=100,
-                      command=self._browse_temp).pack(side="left")
+        # ── Build each panel ──────────────────────────────────────────────
+        self._build_tab_general()
+        self._build_tab_downloads()
+        self._build_tab_extensions()
+        self._build_tab_remote()
+        self._build_tab_system()
 
-        ctk.CTkButton(content, text="Reset to default", width=180,
-                      fg_color="transparent", border_width=1,
-                      command=self._reset_default).pack(anchor="w", padx=20, pady=(2, 8))
+        # Show first tab
+        self._show_tab("general")
 
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+    def _show_tab(self, key: str):
+        """Switches to the given tab panel."""
+        for k, panel in self._tab_panels.items():
+            panel.grid_remove()
+        for k, btn in self._tab_btns.items():
+            btn.configure(fg_color="#1f6aa5" if k == key else "transparent")
+        self._tab_panels[key].grid(row=0, column=0, sticky="nsew",
+                                   in_=self._panel_host)
 
-        # ── Section: Retry ──────────────────────────────────────────────
-        self._section(content, "Automatic retry",
-                      "Automatically retries on network errors. Delay doubles each attempt.")
+    def _make_panel(self, key: str) -> ctk.CTkScrollableFrame:
+        """Creates a scrollable panel and registers it."""
+        panel = ctk.CTkScrollableFrame(self._panel_host, fg_color="transparent")
+        self._tab_panels[key] = panel
+        return panel
 
-        row_retry = ctk.CTkFrame(content, fg_color="transparent")
-        row_retry.pack(fill="x", padx=20, pady=(0, 8))
+    # ── Tab: General ──────────────────────────────────────────────────────
+    def _build_tab_general(self):
+        p = self._make_panel("general")
 
-        ctk.CTkLabel(row_retry, text="Max attempts:").pack(side="left", padx=(0, 6))
-        self._retry_max_entry = ctk.CTkEntry(row_retry, width=60)
-        self._retry_max_entry.insert(0, str(self._settings.get("retry_max", 3)))
-        self._retry_max_entry.pack(side="left", padx=(0, 20))
+        # Two-column grid inside the panel
+        col_frame = ctk.CTkFrame(p, fg_color="transparent")
+        col_frame.pack(fill="both", expand=True, padx=4, pady=4)
+        col_frame.grid_columnconfigure(0, weight=1)
+        col_frame.grid_columnconfigure(1, weight=1)
+        col_frame.grid_rowconfigure(0, weight=1)
 
-        ctk.CTkLabel(row_retry, text="Initial delay (s):").pack(side="left", padx=(0, 6))
-        self._retry_delay_entry = ctk.CTkEntry(row_retry, width=60)
-        self._retry_delay_entry.insert(0, str(self._settings.get("retry_delay", 5)))
-        self._retry_delay_entry.pack(side="left")
+        left  = ctk.CTkFrame(col_frame, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(8, 4))
+        right = ctk.CTkFrame(col_frame, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(4, 8))
 
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
-
-        # ── Section: Throttle ───────────────────────────────────────────
-        self._section(content, "Bandwidth limit",
-                      "Global limit shared across all workers. 0 = unlimited.")
-
-        row_throttle = ctk.CTkFrame(content, fg_color="transparent")
-        row_throttle.pack(fill="x", padx=20, pady=(0, 8))
-
-        ctk.CTkLabel(row_throttle, text="Limit (MB/s):").pack(side="left", padx=(0, 6))
-        self._throttle_entry = ctk.CTkEntry(row_throttle, width=80)
-        self._throttle_entry.insert(0, str(self._settings.get("throttle", 0)))
-        self._throttle_entry.pack(side="left", padx=(0, 10))
-        ctk.CTkLabel(row_throttle, text="0 = unlimited",
-                     text_color="gray").pack(side="left")
-
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
-
-        # ── Section: Default destination folder ─────────────────────────
-        self._section(content, "Default destination folder",
-                      "Downloads go here when no custom path is set in the file tree popup.")
-
-        row_dest = ctk.CTkFrame(content, fg_color="transparent")
-        row_dest.pack(fill="x", padx=20, pady=(0, 4))
-
+        # Left — paths
+        self._section(left, "Default destination folder",
+                      "Downloads go here when no custom path is set in the popup.")
+        row_dest = ctk.CTkFrame(left, fg_color="transparent")
+        row_dest.pack(fill="x", padx=4, pady=(0, 4))
         self._dest_entry = ctk.CTkEntry(row_dest)
         self._dest_entry.insert(0, self._settings.get("default_dest", DEFAULT_DEST_DIR))
         self._dest_entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
-
         ctk.CTkButton(row_dest, text="Browse…", width=100,
                       command=self._browse_dest).pack(side="left")
-
-        ctk.CTkButton(content, text="Reset to Downloads", width=180,
+        ctk.CTkButton(left, text="Reset to Downloads", width=180,
                       fg_color="transparent", border_width=1,
-                      command=self._reset_dest).pack(anchor="w", padx=20, pady=(2, 8))
+                      command=self._reset_dest).pack(anchor="w", padx=4, pady=(2, 10))
 
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+        self._section(left, "Temporary download folder",
+                      "Files written here during download, then moved atomically.")
+        row_temp = ctk.CTkFrame(left, fg_color="transparent")
+        row_temp.pack(fill="x", padx=4, pady=(0, 4))
+        self._temp_entry = ctk.CTkEntry(row_temp)
+        self._temp_entry.insert(0, self._settings.get("temp_dir", DEFAULT_TEMP_DIR))
+        self._temp_entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        ctk.CTkButton(row_temp, text="Browse…", width=100,
+                      command=self._browse_temp).pack(side="left")
+        ctk.CTkButton(left, text="Reset to default", width=180,
+                      fg_color="transparent", border_width=1,
+                      command=self._reset_default).pack(anchor="w", padx=4, pady=(2, 10))
 
-        # ── Section: Concurrent workers ──────────────────────────────────
-        self._section(content, "Concurrent workers",
+        # Right — workers / retry / bandwidth / multipart
+        self._section(right, "Concurrent workers",
                       "Number of simultaneous downloads. Default: 10.")
-
-        row_workers = ctk.CTkFrame(content, fg_color="transparent")
-        row_workers.pack(fill="x", padx=20, pady=(0, 8))
+        row_workers = ctk.CTkFrame(right, fg_color="transparent")
+        row_workers.pack(fill="x", padx=4, pady=(0, 10))
         ctk.CTkLabel(row_workers, text="Workers:").pack(side="left", padx=(0, 8))
         self._workers_entry = ctk.CTkEntry(row_workers, width=60)
         self._workers_entry.insert(0, str(self._settings.get("workers", 10)))
@@ -213,82 +243,80 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(row_workers, text="(1–20)",
                      text_color="gray").pack(side="left", padx=(8, 0))
 
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
+        self._section(right, "Automatic retry",
+                      "Retries on network errors. Delay doubles each attempt.")
+        row_retry = ctk.CTkFrame(right, fg_color="transparent")
+        row_retry.pack(fill="x", padx=4, pady=(0, 10))
+        ctk.CTkLabel(row_retry, text="Max:").pack(side="left", padx=(0, 6))
+        self._retry_max_entry = ctk.CTkEntry(row_retry, width=60)
+        self._retry_max_entry.insert(0, str(self._settings.get("retry_max", 3)))
+        self._retry_max_entry.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(row_retry, text="Delay (s):").pack(side="left", padx=(0, 6))
+        self._retry_delay_entry = ctk.CTkEntry(row_retry, width=60)
+        self._retry_delay_entry.insert(0, str(self._settings.get("retry_delay", 5)))
+        self._retry_delay_entry.pack(side="left")
 
-        # ── Section: Notifications ──────────────────────────────────────
-        self._section(content, "Desktop notifications",
+        self._section(right, "Bandwidth limit",
+                      "Global cap shared across all workers. 0 = unlimited.")
+        row_throttle = ctk.CTkFrame(right, fg_color="transparent")
+        row_throttle.pack(fill="x", padx=4, pady=(0, 10))
+        ctk.CTkLabel(row_throttle, text="Limit (MB/s):").pack(side="left", padx=(0, 6))
+        self._throttle_entry = ctk.CTkEntry(row_throttle, width=80)
+        self._throttle_entry.insert(0, str(self._settings.get("throttle", 0)))
+        self._throttle_entry.pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(row_throttle, text="0 = unlimited",
+                     text_color="gray").pack(side="left")
+
+        self._section(right, "Multipart download",
+                      "Splits files into N parallel segments. Requires Accept-Ranges. 1 = off.")
+        row_seg = ctk.CTkFrame(right, fg_color="transparent")
+        row_seg.pack(fill="x", padx=4, pady=(0, 10))
+        self._seg_val_lbl = ctk.CTkLabel(row_seg, text="", width=30)
+        self._seg_val_lbl.pack(side="right", padx=(6, 0))
+        self._seg_slider = ctk.CTkSlider(
+            row_seg, from_=1, to=16, number_of_steps=15,
+            command=self._on_seg_slider)
+        self._seg_slider.set(self._settings.get("segments", 4))
+        self._seg_slider.pack(side="left", fill="x", expand=True)
+        self._on_seg_slider(self._seg_slider.get())
+
+    # ── Tab: Downloads ────────────────────────────────────────────────────
+    def _build_tab_downloads(self):
+        p = self._make_panel("downloads")
+
+        self._section(p, "Desktop notifications",
                       "Alert when all downloads in a batch are complete.")
-
-        row_notif = ctk.CTkFrame(content, fg_color="transparent")
-        row_notif.pack(fill="x", padx=20, pady=(0, 8))
+        row_notif = ctk.CTkFrame(p, fg_color="transparent")
+        row_notif.pack(fill="x", padx=20, pady=(0, 14))
         self._notif_var = ctk.BooleanVar(value=self._settings.get("notifications", True))
         ctk.CTkCheckBox(row_notif, text="Enable notifications (requires plyer)",
                         variable=self._notif_var).pack(side="left")
 
-        # ── Section: System ─────────────────────────────────────────────
-        self._section(content, "System",
-                      "Window and startup behaviour.")
+        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 4))
 
-        row_sys = ctk.CTkFrame(content, fg_color="transparent")
-        row_sys.pack(fill="x", padx=20, pady=(0, 4))
+        self._section(p, "yt-dlp / streaming",
+                      "Dependencies for streaming URL downloads (YouTube, Vimeo, etc.)")
+        row_ff = ctk.CTkFrame(p, fg_color="transparent")
+        row_ff.pack(fill="x", padx=20, pady=(0, 6))
+        ctk.CTkLabel(row_ff, text="ffmpeg path:", width=130, anchor="w").pack(side="left")
+        ctk.CTkLabel(row_ff, text="Auto-detected from app folder or PATH",
+                     text_color="gray").pack(side="left")
 
-        # Start with Windows
-        try:
-            import tray as _tray_mod
-            startup_ok = True
-        except ImportError:
-            startup_ok = False
+        row_nd = ctk.CTkFrame(p, fg_color="transparent")
+        row_nd.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(row_nd, text="Node.js path:", width=130, anchor="w").pack(side="left")
+        ctk.CTkLabel(row_nd, text="Auto-detected — or install via Settings → Remote",
+                     text_color="gray").pack(side="left")
 
-        self._startup_var = ctk.BooleanVar(
-            value=_tray_mod.is_startup_enabled() if startup_ok else False)
-        startup_cb = ctk.CTkCheckBox(
-            row_sys, text="Start with Windows  (launches minimized in tray)",
-            variable=self._startup_var,
-            state="normal" if startup_ok else "disabled")
-        startup_cb.pack(side="left")
+    # ── Tab: Extensions ───────────────────────────────────────────────────
+    def _build_tab_extensions(self):
+        p = self._make_panel("extensions")
 
-        # Minimize to tray on close
-        row_sys2 = ctk.CTkFrame(content, fg_color="transparent")
-        row_sys2.pack(fill="x", padx=20, pady=(0, 8))
-        self._minimize_tray_var = ctk.BooleanVar(
-            value=self._settings.get("minimize_to_tray", True))
-        ctk.CTkCheckBox(row_sys2,
-                        text="Minimize to tray when closing the window",
-                        variable=self._minimize_tray_var).pack(side="left")
+        self._section(p, "Downloadable extensions",
+                      "Only files with these extensions are detected during crawl.")
 
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
-
-        # ── Section: Multipart ──────────────────────────────────────────
-        self._section(content, "Multipart download",
-                      "Divise chaque fichier en N segments parallèles. "
-                      "Requiert Accept-Ranges sur le serveur. 1 = désactivé.")
-
-        row_seg = ctk.CTkFrame(content, fg_color="transparent")
-        row_seg.pack(fill="x", padx=20, pady=(0, 8))
-
-        self._seg_val_lbl = ctk.CTkLabel(row_seg, text="", width=30)
-        self._seg_val_lbl.pack(side="right", padx=(6, 0))
-
-        self._seg_slider = ctk.CTkSlider(
-            row_seg, from_=1, to=16, number_of_steps=15,
-            command=self._on_seg_slider,
-        )
-        self._seg_slider.set(self._settings.get("segments", 4))
-        self._seg_slider.pack(side="left", fill="x", expand=True)
-        self._on_seg_slider(self._seg_slider.get())  # init label
-
-        # ── Separator ───────────────────────────────────────────────────
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 0))
-
-        # ── Section: Extensions ─────────────────────────────────────────
-        self._section(content, "Downloadable extensions",
-                      "Only files with these extensions will be detected during crawl.")
-
-        # "All files" toggle — disables the extension filter entirely
-        row_allfiles = ctk.CTkFrame(content, fg_color="transparent")
-        row_allfiles.pack(fill="x", padx=20, pady=(0, 6))
+        row_allfiles = ctk.CTkFrame(p, fg_color="transparent")
+        row_allfiles.pack(fill="x", padx=20, pady=(0, 10))
         self._all_files_var = ctk.BooleanVar(value=self._settings.get("all_files", False))
         ctk.CTkCheckBox(
             row_allfiles,
@@ -296,13 +324,12 @@ class SettingsPopup(ctk.CTkToplevel):
             variable=self._all_files_var,
         ).pack(side="left")
 
-        ext_grid = ctk.CTkFrame(content, fg_color="transparent")
+        ext_grid = ctk.CTkFrame(p, fg_color="transparent")
         ext_grid.pack(fill="x", padx=20, pady=(0, 4))
 
         saved_exts: dict = self._settings.get("extensions", DEFAULT_EXTENSIONS.copy())
         self._ext_vars: dict[str, ctk.BooleanVar] = {}
 
-        # Checkboxes for predefined extensions (2 columns)
         predefined = list(DEFAULT_EXTENSIONS.keys())
         for i, ext in enumerate(predefined):
             var = ctk.BooleanVar(value=saved_exts.get(ext, DEFAULT_EXTENSIONS[ext]))
@@ -310,39 +337,84 @@ class SettingsPopup(ctk.CTkToplevel):
             cb = ctk.CTkCheckBox(ext_grid, text=ext, variable=var, width=100)
             cb.grid(row=i // 4, column=i % 4, padx=6, pady=2, sticky="w")
 
-        # Row for custom extensions
-        row_custom = ctk.CTkFrame(content, fg_color="transparent")
+        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(8, 4))
+
+        row_custom = ctk.CTkFrame(p, fg_color="transparent")
         row_custom.pack(fill="x", padx=20, pady=(4, 0))
-        ctk.CTkLabel(row_custom, text="Add:").pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_custom, text="Add custom:").pack(side="left", padx=(0, 6))
         self._custom_ext_entry = ctk.CTkEntry(row_custom, width=100,
                                               placeholder_text=".ext")
         self._custom_ext_entry.pack(side="left", padx=(0, 8))
         ctk.CTkButton(row_custom, text="+ Add", width=90,
                       command=self._add_custom_ext).pack(side="left")
 
-        # Frame for dynamically added custom extension checkboxes
-        # No fixed height — grows only when extensions are actually added
-        self._custom_ext_frame = ctk.CTkFrame(content, fg_color="transparent")
+        self._custom_ext_frame = ctk.CTkFrame(p, fg_color="transparent")
         self._custom_ext_frame.pack(fill="x", padx=20, pady=0)
 
-        # Load already saved custom extensions (not in predefined list)
         _has_custom = False
         for ext, enabled in saved_exts.items():
             if ext not in DEFAULT_EXTENSIONS:
                 self._add_custom_ext_row(ext, enabled)
                 _has_custom = True
-        # Only add bottom padding if there are custom ext rows
         if _has_custom:
             self._custom_ext_frame.pack_configure(pady=(0, 6))
 
-        # ── Section: Remote control ──────────────────────────────────────
-        self._build_remote_section(content)
+    # ── Tab: Remote ───────────────────────────────────────────────────────
+    def _build_tab_remote(self):
+        p = self._make_panel("remote")
+        self._build_remote_section(p)
 
-        # ── Bottom buttons (inside bot frame) ───────────────────────────
-        ctk.CTkButton(bot, text="Cancel", width=110, fg_color="#5a5a5a",
-                      command=self.destroy).pack(side="right", padx=(8, 16), pady=12)
-        ctk.CTkButton(bot, text="Save", width=130, fg_color="#1f6aa5",
-                      command=self._save).pack(side="right", pady=12)
+    # ── Tab: System ───────────────────────────────────────────────────────
+    def _build_tab_system(self):
+        p = self._make_panel("system")
+
+        self._section(p, "System tray & startup",
+                      "Window behaviour and Windows startup.")
+
+        try:
+            import tray as _tray_mod
+            startup_ok = True
+        except ImportError:
+            startup_ok = False
+
+        row_sys = ctk.CTkFrame(p, fg_color="transparent")
+        row_sys.pack(fill="x", padx=20, pady=(0, 6))
+        self._startup_var = ctk.BooleanVar(
+            value=_tray_mod.is_startup_enabled() if startup_ok else False)
+        ctk.CTkCheckBox(
+            row_sys, text="Start with Windows  (launches minimized in tray)",
+            variable=self._startup_var,
+            state="normal" if startup_ok else "disabled").pack(side="left")
+
+        row_sys2 = ctk.CTkFrame(p, fg_color="transparent")
+        row_sys2.pack(fill="x", padx=20, pady=(0, 14))
+        self._minimize_tray_var = ctk.BooleanVar(
+            value=self._settings.get("minimize_to_tray", True))
+        ctk.CTkCheckBox(row_sys2,
+                        text="Minimize to tray when closing the window",
+                        variable=self._minimize_tray_var).pack(side="left")
+
+        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 8))
+
+        self._section(p, "Protocol",
+                      "Custom URL handler for browser extension integration.")
+        ctk.CTkLabel(p, text="turbodownloader:// — registered automatically at each launch",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
+                         anchor="w", padx=20, pady=(0, 14))
+
+        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 8))
+
+        self._section(p, "About", "")
+        info = ctk.CTkFrame(p, fg_color="transparent")
+        info.pack(fill="x", padx=20, pady=(0, 8))
+        ctk.CTkLabel(info, text="Version:", width=130, anchor="w").pack(side="left")
+        ctk.CTkLabel(info, text="2.5.1", text_color="gray").pack(side="left")
+
+        info2 = ctk.CTkFrame(p, fg_color="transparent")
+        info2.pack(fill="x", padx=20)
+        ctk.CTkLabel(info2, text="Config folder:", width=130, anchor="w").pack(side="left")
+        ctk.CTkLabel(info2, text="~/.turbodownloader/",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left")
 
     @staticmethod
     def _section(parent, title: str, subtitle: str):
@@ -688,6 +760,9 @@ class SettingsPopup(ctk.CTkToplevel):
                 max_retries=0,   # infinite retries
             )
 
+            # Start global download tracker — syncs all server DLs to client UI
+            self.master._start_remote_dl_tracker()
+
             self.master._update_remote_status_bar()
             self._refresh_client_badge()
         else:
@@ -990,6 +1065,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
                       command=self.destroy).pack(side="right", padx=12, pady=8)
 
         self._navigate("")
+        _center_on_master(self, master)
 
     # ── Mode switch ────────────────────────────────────────────────────────────
 

@@ -47,6 +47,13 @@ def _load_thumb_async(url: str, label: ctk.CTkLabel, size=(120, 68)):
 
 # ── Main popup ───────────────────────────────────────────────────────────────
 
+def _center_on_master(window, master):
+    window.update_idletasks()
+    x = master.winfo_rootx() + (master.winfo_width()  - window.winfo_width())  // 2
+    y = master.winfo_rooty() + (master.winfo_height() - window.winfo_height()) // 2
+    window.geometry(f"+{max(0,x)}+{max(0,y)}")
+
+
 class YtdlpPopup(ctk.CTkToplevel):
     """
     Quality selection popup for yt-dlp downloads.
@@ -68,9 +75,14 @@ class YtdlpPopup(ctk.CTkToplevel):
         self.geometry("820x700")
         self.resizable(True, True)
         self.grab_set()
+        self.after(50, lambda: _center_on_master(self, master))
 
         self._urls         = urls
         self._on_confirm   = on_confirm
+        # If no default dest, fall back to most recently used
+        if not default_dest and recent_dests:
+            default_dest = next((d for d in recent_dests if d), "")
+
         self._default_dest = default_dest
         self._recent_dests = [d for d in (recent_dests or []) if d and d != default_dest]
         self._canceled     = False

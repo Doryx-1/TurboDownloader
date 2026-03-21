@@ -190,6 +190,7 @@ class TurboDownloader(ctk.CTk):
                                     interval=15,
                                     max_retries=0,
                                 )
+                            self._start_remote_dl_tracker()
                             self.ui(self._update_remote_status_bar)
                             print(f"[remote] Auto-connect OK ✓")
                         else:
@@ -241,8 +242,13 @@ class TurboDownloader(ctk.CTk):
             self._remote_cli_lbl.configure(
                 text=f"🔗  Client — connected to {host}:{port}")
             self._remote_cli_bar.pack(fill="x", padx=16, pady=(0, 8))
+            # Show clear button
+            if hasattr(self, "_clear_remote_btn"):
+                self._clear_remote_btn.pack(fill="x")
         else:
             self._remote_cli_bar.pack_forget()
+            if hasattr(self, "_clear_remote_btn"):
+                self._clear_remote_btn.pack_forget()
 
     def _disconnect_server(self):
         """Stop the remote server."""
@@ -260,6 +266,151 @@ class TurboDownloader(ctk.CTk):
             self._remote_client.disconnect()   # stops heartbeat thread
             self._remote_client = None
         self._update_remote_status_bar()
+
+    def _start_remote_dl_tracker(self):
+        """
+        Single background thread that polls the server every 2s and
+        auto-creates/updates shadow rows for ALL downloads on the server.
+        """
+        import threading as _th
+        import time as _t
+
+        def _tracker():
+            server_to_shadow: dict = {}
+
+            while True:
+                _t.sleep(2)
+                client = self._remote_client
+                if client is None or not client.connected:
+                    break
+                try:
+                    data = client.get_status()
+                    if not data:
+                        continue
+
+                    downloads = data.get("downloads", [])
+
+                    for dl in downloads:
+                        server_idx = dl.get("idx")
+                        state      = dl.get("state", "")
+                        url        = dl.get("url", "")
+                        fname      = dl.get("filename", "")
+                        pct        = dl.get("progress", 0) / 100
+                        speed      = dl.get("speed_bps", 0)
+                        err        = dl.get("error", "")
+
+                        if server_idx is None:
+                            continue
+
+                        if server_idx not in server_to_shadow:
+                            existing = next(
+                                (s_idx for s_idx, s in
+                                 getattr(self, "_shadow_rows", {}).items()
+                                 if s.get("server_idx") == server_idx
+                                 or s.get("url") == url),
+                                None
+                            )
+                            if existing is not None:
+                                server_to_shadow[server_idx] = existing
+                                if existing in getattr(self, "_shadow_rows", {}):
+                                    self._shadow_rows[existing]["server_idx"] = server_idx
+                            else:
+                                ev = _th.Event()
+                                def _create(u=url, si=server_idx):
+                                    shadow_idx = self._add_remote_shadow_row(u, "", si)
+                                    server_to_shadow[si] = shadow_idx
+                                    ev.set()
+                                self.ui(_create)
+                                ev.wait(timeout=1.0)
+                                continue
+
+                        shadow_idx = server_to_shadow.get(server_idx)
+                        if shadow_idx is None:
+                            continue
+                        shadow = getattr(self, "_shadow_rows", {}).get(shadow_idx)
+                        if not shadow:
+                            server_to_shadow.pop(server_idx, None)
+                            continue
+
+                        row = shadow["row"]
+                        shadow["state"]      = state
+                        shadow["server_idx"] = server_idx
+
+                        state_map = {
+                            "downloading": ("📡 Downloading", "#2e8b57"),
+                            "waiting":     ("📡 Waiting",     "#666666"),
+                            "paused":      ("📡 Paused",      "#5a7a9a"),
+                            "moving":      ("📡 Converting…", "#888800"),
+                            "done":        ("📡 Done ✓",      "#2e6b3e"),
+                            "error":       (f"📡 Error: {err[:30]}", "#8B0000"),
+                            "canceled":    ("📡 Canceled",    "#555555"),
+                        }
+                        lbl, color = state_map.get(state, (f"📡 {state}", "#888888"))
+                        is_final  = state in ("done", "error", "canceled")
+                        is_paused = state == "paused"
+
+                        def _update(r=row, l=lbl, c=color, p=pct,
+                                    sp=speed, fn=fname, final=is_final,
+                                    paused=is_paused, si=shadow_idx,
+                                    srv=server_idx):
+                            if si not in getattr(self, "_shadow_rows", {}):
+                                return
+                            if fn:
+                                r.name_lbl.configure(text=f"📡 {fn}")
+                            r.status.configure(text=l, text_color=c)
+                            r.progress.set(p)
+                            if sp > 0:
+                                spd = (f"{sp} B/s" if sp < 1024
+                                       else f"{sp/1024:.1f} KB/s" if sp < 1024**2
+                                       else f"{sp/1024**2:.2f} MB/s")
+                                r.speed_lbl.configure(text=f"Remote · {spd}")
+                            # Buttons — active once server_idx is known
+                            can_control = srv is not None and not final
+                            r.pause_btn.configure(
+                                text="▶" if paused else "⏸",
+                                state="normal" if can_control else "disabled")
+                            r.cancel_btn.configure(
+                                state="normal" if can_control else "disabled")
+                            r.remove_btn.configure(
+                                state="normal" if final else "disabled")
+                            self._sort_shadow_rows()
+
+                        self.ui(_update)
+                        if is_final:
+                            server_to_shadow.pop(server_idx, None)
+
+                except Exception as e:
+                    print(f"[dl-tracker] Error: {e}")
+
+        _th.Thread(target=_tracker, daemon=True, name="RemoteDLTracker").start()
+        print("[remote-client] Download tracker started")
+
+    def _sort_shadow_rows(self):
+        """Sorts shadow rows — active on top, finished at bottom."""
+        shadows = getattr(self, "_shadow_rows", {})
+        if len(shadows) < 2:
+            return
+        PRIORITY = {"downloading": 0, "waiting": 1, "paused": 2,
+                    "moving": 3, "done": 4, "canceled": 5, "error": 6}
+        sorted_items = sorted(
+            shadows.items(),
+            key=lambda kv: PRIORITY.get(kv[1].get("state", "done"), 4)
+        )
+        for _, shadow in sorted_items:
+            shadow["row"].frame.pack_forget()
+            shadow["row"].frame.pack(fill="x", pady=3, padx=4)
+
+    def _remote_clear_done(self):
+        """Removes finished shadow rows locally and clears them on the server."""
+        client = self._remote_client
+        if client:
+            threading.Thread(target=client.clear_done, daemon=True).start()
+        to_remove = [
+            s_idx for s_idx, s in getattr(self, "_shadow_rows", {}).items()
+            if s.get("state", "") in ("done", "error", "canceled")
+        ]
+        for s_idx in to_remove:
+            self._remove_shadow_row(s_idx)
 
     # ── Tray / window lifecycle ───────────────────────────────────────────────
 
@@ -473,6 +624,18 @@ class TurboDownloader(ctk.CTk):
                       font=ctk.CTkFont(size=12),
                       command=self._open_remote_control).pack(side="left", expand=True,
                                                               fill="x", padx=(0, 0))
+
+        # Clear remote button — visible only in client mode
+        bot_btns2 = ctk.CTkFrame(sidebar, fg_color="transparent")
+        bot_btns2.pack(side="bottom", fill="x", padx=16, pady=(0, 2))
+        self._clear_remote_btn = ctk.CTkButton(
+            bot_btns2, text="🗑 Clear remote done", height=26,
+            fg_color="transparent", border_width=1, border_color="#3a1a1a",
+            text_color="#cc7777", hover_color="#2a1010",
+            font=ctk.CTkFont(size=11),
+            command=self._remote_clear_done)
+        self._clear_remote_btn.pack(fill="x")
+        self._clear_remote_btn.pack_forget()   # hidden until client connects
 
         ctk.CTkLabel(sidebar, text="© Doryx-1",
                      font=ctk.CTkFont(size=10), text_color="#333333").pack(
@@ -777,10 +940,12 @@ class TurboDownloader(ctk.CTk):
         self.rows[idx] = row
         self._apply_filter_to_row(idx)
 
-    def _add_remote_shadow_row(self, url: str, dest: str):
+    def _add_remote_shadow_row(self, url: str, dest: str,
+                              server_idx: int = None) -> int:
         """
-        Adds a read-only shadow row on the client side to track a download
-        running on the remote server. Polls the server every 2s for updates.
+        Adds a controllable shadow row for a download running on the remote server.
+        Controls (pause/resume/cancel/remove) call the server API directly.
+        Returns the shadow_idx assigned.
         """
         import os as _os
         if not hasattr(self, "_shadow_rows"):
@@ -789,111 +954,68 @@ class TurboDownloader(ctk.CTk):
             self._shadow_counter = 0
 
         name = _os.path.basename(url.split("?")[0]) or url[:60]
-
-        # Atomic counter — no collisions even on rapid successive calls
         self._shadow_counter -= 1
         shadow_idx = self._shadow_counter
 
+        def _remote_pause():
+            si = self._shadow_rows.get(shadow_idx, {}).get("server_idx")
+            print(f"[shadow] pause clicked — server_idx={si}")
+            if si is None:
+                print("[shadow] server_idx not yet known, ignoring")
+                return
+            if not self._remote_client:
+                return
+            it_state = self._shadow_rows.get(shadow_idx, {}).get("state", "")
+            if it_state == "paused":
+                threading.Thread(target=lambda: self._remote_client.resume(si),
+                                 daemon=True).start()
+            else:
+                threading.Thread(target=lambda: self._remote_client.pause(si),
+                                 daemon=True).start()
+
+        def _remote_cancel():
+            si = self._shadow_rows.get(shadow_idx, {}).get("server_idx")
+            print(f"[shadow] cancel clicked — server_idx={si}")
+            if si is None:
+                print("[shadow] server_idx not yet known, ignoring")
+                return
+            if not self._remote_client:
+                return
+            threading.Thread(target=lambda: self._remote_client.cancel(si),
+                             daemon=True).start()
+
+        def _remote_remove():
+            si = self._shadow_rows.get(shadow_idx, {}).get("server_idx")
+            print(f"[shadow] remove clicked — server_idx={si}")
+            if si is not None and self._remote_client:
+                threading.Thread(target=lambda: self._remote_client.remove(si),
+                                 daemon=True).start()
+            self._remove_shadow_row(shadow_idx)
+
         row = DownloadRow(
             self.scroll, f"📡 {name}",
-            on_pause=lambda: None,
-            on_cancel=lambda: None,
-            on_remove=lambda: self._remove_shadow_row(shadow_idx),
+            on_pause=_remote_pause,
+            on_cancel=_remote_cancel,
+            on_remove=_remote_remove,
             on_priority=None,
         )
-        row.pause_btn.configure(state="disabled")
-        row.cancel_btn.configure(state="disabled")
+        # Buttons active — controls are wired to server API
+        row.pause_btn.configure(state="normal")
+        row.cancel_btn.configure(state="normal")
+        row.remove_btn.configure(state="disabled")
         row.status.configure(text="📡 Sent to server", text_color="#5a9acd")
         row.speed_lbl.configure(text="Remote")
         row.eta_lbl.configure(text=dest[:30] + "…" if len(dest) > 30 else dest)
         row.progress.configure(progress_color="#1a4a7a")
 
-        self._shadow_rows[shadow_idx] = {"row": row, "url": url, "server_idx": None}
+        self._shadow_rows[shadow_idx] = {
+            "row":        row,
+            "url":        url,
+            "server_idx": server_idx,
+            "state":      "waiting",
+        }
         self._refresh_filter_counts()
-
-        # Start polling thread to follow progress on the server
-        def _poll():
-            import time as _t
-            consecutive_done = 0
-            consecutive_fail = 0
-
-            while shadow_idx in getattr(self, "_shadow_rows", {}):
-                _t.sleep(2)
-
-                client = self._remote_client
-                if client is None or not client.connected:
-                    def _ui_offline(r=row):
-                        if shadow_idx not in getattr(self, "_shadow_rows", {}):
-                            return
-                        r.status.configure(text="📡 Client offline", text_color="#888888")
-                    self.ui(_ui_offline)
-                    consecutive_fail += 1
-                    if consecutive_fail >= 30:  # 60s without client → stop
-                        break
-                    continue
-
-                consecutive_fail = 0
-
-                try:
-                    data = client.get_status()
-                    if not data:
-                        continue
-
-                    downloads = data.get("downloads", [])
-                    matches = [d for d in downloads if d.get("url") == url]
-                    match   = matches[-1] if matches else None
-
-                    if not match:
-                        continue
-
-                    state = match.get("state", "?")
-                    pct   = match.get("progress", 0) / 100
-                    speed = match.get("speed_bps", 0)
-                    fname = match.get("filename", name)
-                    err   = match.get("error", "")
-
-                    state_map = {
-                        "downloading": ("📡 Downloading", "#2e8b57"),
-                        "waiting":     ("📡 Waiting",     "#666666"),
-                        "paused":      ("📡 Paused",      "#5a7a9a"),
-                        "moving":      ("📡 Converting…", "#888800"),
-                        "done":        ("📡 Done ✓",      "#2e6b3e"),
-                        "error":       (f"📡 Error: {err[:30]}", "#8B0000"),
-                        "canceled":    ("📡 Canceled",    "#555555"),
-                    }
-                    lbl, color = state_map.get(state, (f"📡 {state}", "#888888"))
-
-                    def _ui_update(r=row, p=pct, l=lbl, c=color,
-                                   sp=speed, fn=fname, st=state):
-                        if shadow_idx not in getattr(self, "_shadow_rows", {}):
-                            return
-                        r.name_lbl.configure(text=f"📡 {fn}")
-                        r.status.configure(text=l, text_color=c)
-                        r.progress.set(p)
-                        if sp > 0:
-                            if sp < 1024:
-                                spd_txt = f"{sp} B/s"
-                            elif sp < 1024**2:
-                                spd_txt = f"{sp/1024:.1f} KB/s"
-                            else:
-                                spd_txt = f"{sp/1024**2:.2f} MB/s"
-                            r.speed_lbl.configure(text=f"Remote · {spd_txt}")
-                        if st in ("done", "error", "canceled"):
-                            r.remove_btn.configure(state="normal")
-
-                    self.ui(_ui_update)
-
-                    if state in ("done", "error", "canceled"):
-                        consecutive_done += 1
-                        if consecutive_done >= 2:
-                            break
-                    else:
-                        consecutive_done = 0
-
-                except Exception as e:
-                    print(f"[shadow-poll] Error: {e}")
-
-        threading.Thread(target=_poll, daemon=True, name=f"ShadowPoll{shadow_idx}").start()
+        return shadow_idx
 
     def _remove_shadow_row(self, shadow_idx: int):
         """Removes a shadow row from the client display."""
@@ -1892,7 +2014,6 @@ class TurboDownloader(ctk.CTk):
                                 print(f"[remote-client] Failed to send URL: {url}")
                             else:
                                 print(f"[remote-client] Sent to server: {url} → {dest}")
-                                # Créer une ligne fantôme locale pour suivre le DL distant
                                 self._add_remote_shadow_row(url, dest)
                         popup_done.set()
                     else:

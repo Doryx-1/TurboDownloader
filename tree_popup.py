@@ -44,6 +44,13 @@ class FileTreeNode:
         self._search_hidden = False     # hidden by the search filter
 
 
+def _center_on_master(window, master):
+    window.update_idletasks()
+    x = master.winfo_rootx() + (master.winfo_width()  - window.winfo_width())  // 2
+    y = master.winfo_rooty() + (master.winfo_height() - window.winfo_height()) // 2
+    window.geometry(f"+{max(0,x)}+{max(0,y)}")
+
+
 class FileTreePopup(ctk.CTkToplevel):
     """Popup de sélection — liste PLATE in le scroll (pas de frames imbriqués)."""
 
@@ -61,8 +68,13 @@ class FileTreePopup(ctk.CTkToplevel):
         self.resizable(True, True)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", lambda: self._cancel())
+        self.after(50, lambda: _center_on_master(self, master))
 
         self._on_confirm   = on_confirm
+        # If no default dest, fall back to most recently used
+        if not default_dest and recent_dests:
+            default_dest = next((d for d in recent_dests if d), "")
+
         self._default_dest = default_dest
         self._keep_tree    = keep_tree
         self._recent_dests = [d for d in (recent_dests or []) if d and d != default_dest]

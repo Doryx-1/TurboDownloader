@@ -59,6 +59,13 @@ class HistoryManager:
 
 # ─────────────────────────────────────────────────────────────── Popup
 
+def _center_on_master(window, master):
+    window.update_idletasks()
+    x = master.winfo_rootx() + (master.winfo_width()  - window.winfo_width())  // 2
+    y = master.winfo_rooty() + (master.winfo_height() - window.winfo_height()) // 2
+    window.geometry(f"+{max(0,x)}+{max(0,y)}")
+
+
 class HistoryPopup(ctk.CTkToplevel):
     """Download history window."""
 
@@ -73,6 +80,7 @@ class HistoryPopup(ctk.CTkToplevel):
         self.geometry("900x560")
         self.resizable(True, True)
         self.grab_set()
+        self.after(50, lambda: _center_on_master(self, master))
 
         self._hm            = history_manager
         self._on_redownload = on_redownload

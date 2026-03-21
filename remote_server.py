@@ -498,7 +498,7 @@ class RemoteServer:
             it = app_ref.items.get(idx)
             if not it:
                 raise HTTPException(status_code=404, detail="Not found")
-            app_ref.after(0, lambda: app_ref._pause_item(idx))
+            app_ref.after(0, lambda: app_ref.pause_one(idx))
             return {"status": "pausing", "idx": idx}
 
         @api.post("/downloads/{idx}/resume")
@@ -506,7 +506,7 @@ class RemoteServer:
             it = app_ref.items.get(idx)
             if not it:
                 raise HTTPException(status_code=404, detail="Not found")
-            app_ref.after(0, lambda: app_ref._resume_item(idx))
+            app_ref.after(0, lambda: app_ref.pause_one(idx))  # pause_one toggles
             return {"status": "resuming", "idx": idx}
 
         @api.post("/downloads/{idx}/cancel")
@@ -514,13 +514,39 @@ class RemoteServer:
             it = app_ref.items.get(idx)
             if not it:
                 raise HTTPException(status_code=404, detail="Not found")
-            app_ref.after(0, lambda: app_ref._cancel_item(idx))
+            app_ref.after(0, lambda: app_ref.cancel_one(idx))
             return {"status": "canceling", "idx": idx}
 
         @api.post("/downloads/stop_all")
         def stop_all(_ = Depends(require_auth)):
             app_ref.after(0, app_ref.stop_all)
             return {"status": "stopping_all"}
+
+        @api.post("/downloads/{idx}/remove")
+        def remove_download(idx: int, _ = Depends(require_auth)):
+            """Removes a finished/canceled/errored download row from the list."""
+            it = app_ref.items.get(idx)
+            if not it:
+                raise HTTPException(status_code=404, detail="Not found")
+            if it.state not in ("done", "error", "canceled", "skipped"):
+                raise HTTPException(status_code=400,
+                                    detail="Cannot remove active download")
+            app_ref.after(0, lambda: app_ref.remove_one(idx))
+            return {"status": "removed", "idx": idx}
+
+        @api.post("/downloads/clear_done")
+        def clear_done(_ = Depends(require_auth)):
+            """Removes all finished/canceled/errored rows from the server list."""
+            def _clear():
+                to_remove = [
+                    i for i, it in app_ref.items.items()
+                    if it.state in ("done", "error", "canceled", "skipped")
+                ]
+                for i in to_remove:
+                    app_ref.remove_one(i)
+                print(f"[remote-server] Cleared {len(to_remove)} finished downloads")
+            app_ref.after(0, _clear)
+            return {"status": "cleared"}
 
         @api.get("/history")
         def get_history(_ = Depends(require_auth)):
@@ -776,6 +802,12 @@ class RemoteClient:
 
     def cancel(self, idx: int) -> Optional[dict]:
         return self._post(f"/downloads/{idx}/cancel")
+
+    def remove(self, idx: int) -> Optional[dict]:
+        return self._post(f"/downloads/{idx}/remove")
+
+    def clear_done(self) -> Optional[dict]:
+        return self._post("/downloads/clear_done")
 
     def stop_all(self) -> Optional[dict]:
         return self._post("/downloads/stop_all")
