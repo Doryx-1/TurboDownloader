@@ -173,7 +173,11 @@ class TurboDownloader(ctk.CTk):
             host = self._settings.get("remote_client_host", "")
             port = int(self._settings.get("remote_client_port", 9988))
             user = self._settings.get("remote_client_user", "")
-            pwd  = self._settings.get("remote_client_password", "")
+            try:
+                from settings_popup import _decrypt_password
+                pwd = _decrypt_password(self._settings.get("remote_client_password", ""))
+            except Exception:
+                pwd = self._settings.get("remote_client_password", "")
 
             if host and user and pwd:
                 print(f"[remote] Auto-connecting to {host}:{port}…")

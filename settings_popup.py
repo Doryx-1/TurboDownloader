@@ -84,6 +84,44 @@ def save_settings(settings: dict):
         print(f"[settings] save error: {e}")
 
 
+def _machine_key() -> bytes:
+    """
+    Derives a Fernet key from a machine-specific secret.
+    Uses a combination of username + hostname — stable across reboots,
+    unique per machine, never stored on disk.
+    """
+    import hashlib, socket, os
+    from cryptography.fernet import Fernet
+    import base64
+    seed = f"{os.getlogin()}@{socket.gethostname()}:TurboDL-salt-v1"
+    digest = hashlib.sha256(seed.encode()).digest()
+    return base64.urlsafe_b64encode(digest)   # 32 bytes → valid Fernet key
+
+
+def _encrypt_password(plaintext: str) -> str:
+    """Encrypts a password string with a machine-derived key. Returns base64 str."""
+    if not plaintext:
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+        f = Fernet(_machine_key())
+        return f.encrypt(plaintext.encode()).decode()
+    except Exception:
+        return ""   # Fallback: store empty rather than plaintext on error
+
+
+def _decrypt_password(ciphertext: str) -> str:
+    """Decrypts a previously encrypted password. Returns plaintext or empty string."""
+    if not ciphertext:
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+        f = Fernet(_machine_key())
+        return f.decrypt(ciphertext.encode()).decode()
+    except Exception:
+        return ""   # Token expired / wrong machine / corrupted — treat as empty
+
+
 def _center_on_master(window, master):
     """Centers a Toplevel window on its master after geometry is set."""
     window.update_idletasks()
@@ -503,7 +541,7 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(rc4, text="Password:", width=130, anchor="w").pack(side="left")
         self._rclient_pass_e = ctk.CTkEntry(rc4, width=180, show="•",
                                             placeholder_text="Enter password")
-        saved_pwd = self._settings.get("remote_client_password", "")
+        saved_pwd = _decrypt_password(self._settings.get("remote_client_password", ""))
         if saved_pwd:
             self._rclient_pass_e.insert(0, saved_pwd)
         self._rclient_pass_e.pack(side="left")
@@ -740,7 +778,7 @@ class SettingsPopup(ctk.CTkToplevel):
             self._settings["remote_client_dest"] = self._rclient_dest_e.get().strip()
             # Save password if option enabled
             if getattr(self, "_rclient_savepwd_var", None) and self._rclient_savepwd_var.get():
-                self._settings["remote_client_password"] = pwd
+                self._settings["remote_client_password"] = _encrypt_password(pwd)
                 self._settings["remote_client_save_password"] = True
             self.master._remote_client = c
 
@@ -928,7 +966,8 @@ class SettingsPopup(ctk.CTkToplevel):
             save_pwd = self._rclient_savepwd_var.get()
             self._settings["remote_client_save_password"] = save_pwd
             if save_pwd and getattr(self, "_rclient_pass_e", None):
-                self._settings["remote_client_password"] = self._rclient_pass_e.get()
+                self._settings["remote_client_password"] = _encrypt_password(
+                    self._rclient_pass_e.get())
             elif not save_pwd:
                 self._settings["remote_client_password"] = ""
         if getattr(self, "_rclient_autoconnect_var", None):

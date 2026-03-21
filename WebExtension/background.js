@@ -1,22 +1,27 @@
 // background.js — TurboDownloader Extension Service Worker
 // Handles: download interception, context menu, API communication, badge
+//
+// Security model: extension always talks to 127.0.0.1:9988 (local TD only).
+// No host/port/credentials config — TD generates a local token at startup
+// that the extension fetches automatically.
 
-// ── Default settings ────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const TD_HOST = "http://127.0.0.1:9988";
+const TOKEN_MARGIN_MS = 5 * 60 * 1000;   // renew 5 min before expiry
+
+// ── Default settings ─────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS = {
-  host:        "127.0.0.1",
-  port:        9988,
-  username:    "",
-  password:    "",
   token:       null,
   tokenExpiry: 0,
-  intercept:   false,   // auto-intercept matching downloads
+  intercept:   false,
   extensions:  [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".mp3", ".flac",
                 ".zip", ".rar", ".7z", ".iso", ".exe", ".msi"],
-  dest:        "",      // remote destination folder (empty = server default)
+  dest:        "",
 };
 
-// ── Storage helpers ──────────────────────────────────────────────────────────
+// ── Storage helpers ───────────────────────────────────────────────────────────
 
 async function getSettings() {
   const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
@@ -27,59 +32,51 @@ async function saveSettings(patch) {
   await chrome.storage.local.set(patch);
 }
 
-// ── API communication ────────────────────────────────────────────────────────
+// ── Local token auth (no user config needed) ─────────────────────────────────
 
-async function apiLogin(host, port, username, password) {
-  const proto = (host === "127.0.0.1" || host === "localhost") ? "http" : "https";
-  const url = `${proto}://${host}:${port}/auth/login`;
-  try {
-    const r = await fetch(url, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ username, password }),
-    });
-    if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
-    const data = await r.json();
-    return { ok: true, token: data.token, expiresIn: data.expires_in_h || 24 };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
+async function fetchLocalToken() {
+  // Step 1: read the local token TD wrote to disk (via localhost endpoint)
+  const r1 = await fetch(`${TD_HOST}/local-token`);
+  if (!r1.ok) throw new Error(`local-token: HTTP ${r1.status}`);
+  const { token: localToken } = await r1.json();
 
-async function getProto(host) {
-  return "http";  // server runs plain HTTP — no SSL cert issues
+  // Step 2: exchange it for a JWT
+  const r2 = await fetch(`${TD_HOST}/auth/local`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ token: localToken }),
+  });
+  if (!r2.ok) throw new Error(`auth/local: HTTP ${r2.status}`);
+  const { token: jwt, expires_in_h } = await r2.json();
+  return { token: jwt, expiresIn: expires_in_h || 1 };
 }
 
 async function getToken() {
-  const s = await getSettings();
+  const s   = await getSettings();
   const now = Date.now();
 
-  // Reuse valid token
-  if (s.token && s.tokenExpiry > now + 60_000) {
+  // Reuse valid token if not close to expiry
+  if (s.token && s.tokenExpiry > now + TOKEN_MARGIN_MS) {
     return s.token;
   }
 
-  // Re-authenticate
-  if (!s.username || !s.password) return null;
-
-  const result = await apiLogin(s.host, s.port, s.username, s.password);
-  if (!result.ok) {
-    console.error("[TurboDL] Login failed:", result.error);
+  // Get a fresh JWT via the local token mechanism
+  try {
+    const { token, expiresIn } = await fetchLocalToken();
+    const expiry = now + expiresIn * 3_600_000;
+    await saveSettings({ token, tokenExpiry: expiry });
+    return token;
+  } catch (e) {
+    console.warn("[TurboDL] Auth failed:", e.message);
     return null;
   }
-
-  const expiry = now + result.expiresIn * 3_600_000;
-  await saveSettings({ token: result.token, tokenExpiry: expiry });
-  return result.token;
 }
 
 async function apiSendUrl(url, dest) {
-  const s = await getSettings();
   const token = await getToken();
   if (!token) return { ok: false, error: "Not authenticated" };
 
-  const proto    = await getProto(s.host);
-  const endpoint = `${proto}://${s.host}:${s.port}/downloads/add`;
+  const endpoint = `${TD_HOST}/downloads/add`;
   try {
     const r = await fetch(endpoint, {
       method:  "POST",
@@ -100,7 +97,6 @@ async function apiSendUrl(url, dest) {
 }
 
 async function apiGetStatus() {
-  const s = await getSettings();
   const token = await getToken();
   if (!token) return null;
   const proto = await getProto(s.host);
@@ -162,10 +158,9 @@ async function sendInteractive(urls) {
   // First attempt — try HTTP API (TD already running)
   const token = await getToken();
   if (token) {
-    const proto    = await getProto(s.host);
     const combined = urls.join("\n");
     try {
-      const r = await fetch(`${proto}://${s.host}:${s.port}/downloads/add_interactive`, {
+      const r = await fetch(`${TD_HOST}/downloads/add_interactive`, {
         method:  "POST",
         headers: {
           "Content-Type":  "application/json",
@@ -310,11 +305,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
 
-      // Settings page — test connection
+      // Settings page — test connection (no credentials needed — local token only)
       case "TEST_CONNECTION": {
-        const { host, port, username, password } = msg;
-        const result = await apiLogin(host, port, username, password);
-        sendResponse(result);
+        try {
+          const { token } = await fetchLocalToken();
+          sendResponse({ ok: true });
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message });
+        }
         break;
       }
 
