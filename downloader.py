@@ -157,7 +157,8 @@ class TurboDownloader(ctk.CTk):
 
     def _start_remote_if_enabled(self):
         """Starts the remote control server if enabled in settings.
-        Also auto-connects as client if auto-connect is configured."""
+        Also starts the local extension server (always) and auto-connects as client."""
+
         # ── Server ────────────────────────────────────────────────────────────
         if self._settings.get("remote_enabled", False):
             if self._settings.get("remote_username") and self._settings.get("remote_password_hash"):
@@ -1610,83 +1611,180 @@ class TurboDownloader(ctk.CTk):
         except Exception as e:
             seg.error = str(e)
 
+    # ================================================================= Worker internals
+
+    class _Canceled(Exception):
+        """Raised inside worker sub-methods to signal clean cancellation."""
+
+    class _Paused(Exception):
+        """Raised inside worker sub-methods to signal pause/requeue."""
+        def __init__(self, state: str = "paused"):
+            self.state = state
+
+    class _FatalError(Exception):
+        """Raised inside worker sub-methods for non-retryable errors."""
+        def __init__(self, msg: str):
+            self.msg = msg
+
+    def _resolve_resume(self, it) -> tuple[int, dict]:
+        """
+        Checks existing .part or dest file to compute resume offset.
+        Returns (existing_size, headers_dict).
+        """
+        temp_path = self._get_temp_path(it)
+        it.temp_path = temp_path
+        existing_size = 0
+        if os.path.exists(temp_path):
+            existing_size = os.path.getsize(temp_path)
+        elif os.path.exists(it.dest_path):
+            existing_size = os.path.getsize(it.dest_path)
+        it.resume_from = existing_size
+        it.downloaded  = 0
+        headers = {}
+        if existing_size > 0:
+            headers["Range"] = f"bytes={existing_size}-"
+        return existing_size, headers
+
+    def _stream_to_temp(self, idx: int, it, r, existing_size: int):
+        """
+        Streams response body to the temp .part file.
+        Handles pause, cancel, throttle, and disk-full errors.
+        Raises _Canceled, _Paused, or _FatalError as appropriate.
+        """
+        write_mode = "ab" if existing_size > 0 else "wb"
+        last_ui    = 0.0
+
+        try:
+            with open(it.temp_path, write_mode) as f:
+                for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                    if self.stop_all_event.is_set() or it.cancel_event.is_set():
+                        raise self._Canceled()
+                    if it.pause_event.is_set():
+                        if idx in self._requeue_set:
+                            self._requeue_set.discard(idx)
+                            raise self._Paused("waiting")
+                        raise self._Paused("paused")
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    n = len(chunk)
+                    it.downloaded += n
+                    it.speed_window.append((time.time(), n))
+                    self._record_bytes(n)
+                    self._throttle_chunk(n)
+                    now = time.time()
+                    if now - last_ui >= 0.20:
+                        last_ui = now
+                        self.ui(self._update_row_ui, idx)
+        except (self._Canceled, self._Paused):
+            raise
+        except OSError as e:
+            if "No space left" in str(e) or e.errno == 28:
+                raise self._FatalError("Temp disk full during download")
+            raise self._FatalError(str(e))
+
+    def _move_to_dest(self, it):
+        """
+        Moves the completed .part file to the final destination.
+        Raises _FatalError on OS error.
+        """
+        try:
+            os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
+            shutil.move(it.temp_path, it.dest_path)
+            it.temp_path = ""
+        except OSError as e:
+            raise self._FatalError(f"Move error: {e}")
+
+    def _finalize_success(self, idx: int, it):
+        """Logs history entry and sets state to done."""
+        it.state = "done"
+        duration = time.time() - it.started_at
+        size     = it.total_size or (it.resume_from + it.downloaded)
+        self._history.log_entry(
+            filename=it.filename,
+            url=it.url,
+            size_bytes=size,
+            duration_s=duration,
+        )
+        self.ui(self._update_row_ui, idx)
+        self.ui(self._refresh_filter_counts)
+
+    def _check_disk_space(self, it):
+        """Raises _FatalError if there is not enough free space in the temp folder."""
+        if not it.total_size:
+            return
+        temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
+        try:
+            free   = shutil.disk_usage(temp_dir).free
+            needed = it.total_size - it.resume_from
+            if free < needed:
+                raise self._FatalError(
+                    f"Temp disk full "
+                    f"({self._fmt_size(free)} free, {self._fmt_size(needed)} required)"
+                )
+        except OSError:
+            pass
+
+    # ================================================================= Download worker
+
     def _download_worker(self, idx: int):
-        it = self.items[idx]
+        it          = self.items[idx]
         retry_max   = int(self._settings.get("retry_max",   3))
         retry_delay = int(self._settings.get("retry_delay", 5))
-
-        # Clear pause_event in case this item was requeued via priority
         it.pause_event.clear()
 
         while True:
-            # ── Clean exit if canceled between retries ───────────────────
+            # ── Cancel check between retries ─────────────────────────────────
             if self.stop_all_event.is_set() or it.cancel_event.is_set():
                 it.state = "canceled"
                 self.ui(self._update_row_ui, idx)
                 self.ui(self._refresh_filter_counts)
                 return
 
-            it.state = "downloading"
+            it.state      = "downloading"
             it.started_at = time.time()
             it.error_msg  = ""
             self.ui(self._update_row_ui, idx)
 
-            # Temp file path (.part)
-            temp_path = self._get_temp_path(it)
-            it.temp_path = temp_path
-
-            # Resume: existing .part → resume, final file already there → skip
-            existing_size = 0
-            if os.path.exists(temp_path):
-                existing_size = os.path.getsize(temp_path)
-            elif os.path.exists(it.dest_path):
-                existing_size = os.path.getsize(it.dest_path)
-
-            it.resume_from = existing_size
-            it.downloaded  = 0
-            headers = {}
-            if existing_size > 0:
-                headers["Range"] = f"bytes={existing_size}-"
+            existing_size, headers = self._resolve_resume(it)
 
             try:
                 with self.req.get(it.url, stream=True, allow_redirects=True,
                                   timeout=60, headers=headers) as r:
 
-                    # Server doesn't support Range → restart from 0
+                    # Server ignores Range → restart from 0
                     if existing_size > 0 and r.status_code == 200:
                         it.resume_from = 0
                         existing_size  = 0
                         try:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
+                            if os.path.exists(it.temp_path):
+                                os.remove(it.temp_path)
                         except OSError:
                             pass
 
                     if r.status_code == 416:
-                        # Server doesn't support range requests — restart from scratch
                         print(f"[worker] 416 Range Not Satisfiable — retrying without resume")
                         it.resume_from = 0
                         it.downloaded  = 0
                         try:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
+                            if os.path.exists(it.temp_path):
+                                os.remove(it.temp_path)
                         except OSError:
                             pass
-                        continue   # retry the loop without range header
+                        continue
 
                     if r.status_code not in (200, 206):
                         r.raise_for_status()
 
                     ct = (r.headers.get("Content-Type") or "").lower()
                     if "text/html" in ct:
-                        # Business error → no retry
                         it.state     = "error"
                         it.error_msg = "HTML received (expired link / auth required?)"
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         return
 
-                    # Size depuis les headers du stream
+                    # Parse total size from headers
                     cr = r.headers.get("Content-Range")
                     if cr and "/" in cr:
                         try:
@@ -1698,33 +1796,17 @@ class TurboDownloader(ctk.CTk):
                         if cl and cl.isdigit():
                             it.total_size = int(cl) + existing_size
 
-                    # File déjà complet → skip
+                    # Already complete → skip
                     if it.total_size and existing_size >= it.total_size:
                         it.state = "skipped"
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         return
 
-                    # Proactive disk space check
-                    if it.total_size:
-                        temp_dir = self._settings.get("temp_dir", DEFAULT_TEMP_DIR)
-                        try:
-                            free   = shutil.disk_usage(temp_dir).free
-                            needed = it.total_size - existing_size
-                            if free < needed:
-                                it.state     = "error"
-                                it.error_msg = (f"Temp disk full "
-                                                f"({self._fmt_size(free)} free, "
-                                                f"{self._fmt_size(needed)} required)")
-                                self.ui(self._update_row_ui, idx)
-                                self.ui(self._refresh_filter_counts)
-                                return
-                        except OSError:
-                            pass
-
+                    self._check_disk_space(it)
                     os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
 
-                    # ── Décision multipart ─────────────────────────────
+                    # ── Multipart decision ────────────────────────────────────
                     n_seg = int(self._settings.get("segments", 4))
                     supports_ranges = (
                         r.headers.get("Accept-Ranges", "").lower() == "bytes"
@@ -1735,123 +1817,69 @@ class TurboDownloader(ctk.CTk):
                         and it.total_size is not None
                         and it.total_size > 0
                         and supports_ranges
-                        and existing_size == 0   # no partial resume in multipart mode
+                        and existing_size == 0
                     )
                     if can_multipart:
                         r.close()
                         result = self._download_multipart(idx, n_seg)
                         if result in ("done", "canceled", "paused", "error"):
                             return
-                        continue  # "retry" → prochain tour de boucle
-                    # ──────────────────────────────────────────────────
+                        continue
 
-                    write_mode = "ab" if existing_size > 0 else "wb"
-                    last_ui    = 0.0
-                    _canceled  = False
-
+                    # ── Single-stream download ────────────────────────────────
                     try:
-                        with open(temp_path, write_mode) as f:
-                            for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                                if self.stop_all_event.is_set() or it.cancel_event.is_set():
-                                    _canceled = True
-                                    break
-                                if it.pause_event.is_set():
-                                    if idx in self._requeue_set:
-                                        # Priority requeue — go back to waiting, not paused
-                                        self._requeue_set.discard(idx)
-                                        it.state = "waiting"
-                                    else:
-                                        it.state = "paused"
-                                    self.ui(self._update_row_ui, idx)
-                                    self.ui(self._refresh_filter_counts)
-                                    return
-                                if not chunk:
-                                    continue
-
-                                f.write(chunk)
-                                n = len(chunk)
-                                it.downloaded += n
-                                it.speed_window.append((time.time(), n))
-                                self._record_bytes(n)
-                                self._throttle_chunk(n)
-
-                                now = time.time()
-                                if now - last_ui >= 0.20:
-                                    last_ui = now
-                                    self.ui(self._update_row_ui, idx)
-
-                    except OSError as e:
-                        if "No space left" in str(e) or e.errno == 28:
-                            it.state     = "error"
-                            it.error_msg = "Temp disk full during download"
-                        else:
-                            it.state     = "error"
-                            it.error_msg = str(e)
-                        self.ui(self._update_row_ui, idx)
-                        self.ui(self._refresh_filter_counts)
-                        return
-
-                    # File .part fermé proprement
-                    if _canceled:
+                        self._stream_to_temp(idx, it, r, existing_size)
+                    except self._Canceled:
                         it.state = "canceled"
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         try:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
+                            if os.path.exists(it.temp_path):
+                                os.remove(it.temp_path)
                         except OSError:
                             pass
                         return
-
-                    # Download complete → move to final destination
-                    it.state = "moving"
-                    self.ui(self._update_row_ui, idx)
-                    self.ui(self._refresh_filter_counts)
-
-                    try:
-                        os.makedirs(os.path.dirname(it.dest_path), exist_ok=True)
-                        shutil.move(temp_path, it.dest_path)
-                    except OSError as e:
+                    except self._Paused as p:
+                        it.state = p.state
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        return
+                    except self._FatalError as fe:
                         it.state     = "error"
-                        it.error_msg = f"Move error: {e}"
+                        it.error_msg = fe.msg
                         self.ui(self._update_row_ui, idx)
                         self.ui(self._refresh_filter_counts)
                         return
 
-                    it.temp_path = ""
-                    it.state     = "done"
-                    # ── Log historique ─────────────────────────────────
-                    duration = time.time() - it.started_at
-                    size     = it.total_size or (it.resume_from + it.downloaded)
-                    self._history.log_entry(
-                        filename=it.filename,
-                        url=it.url,
-                        size_bytes=size,
-                        duration_s=duration,
-                    )
-                    # ──────────────────────────────────────────────────
+                    # ── Move + finalize ───────────────────────────────────────
+                    it.state = "moving"
                     self.ui(self._update_row_ui, idx)
                     self.ui(self._refresh_filter_counts)
-                    return  # ← succès, on sort de la boucle retry
+                    try:
+                        self._move_to_dest(it)
+                    except self._FatalError as fe:
+                        it.state     = "error"
+                        it.error_msg = fe.msg
+                        self.ui(self._update_row_ui, idx)
+                        self.ui(self._refresh_filter_counts)
+                        return
+
+                    self._finalize_success(idx, it)
+                    return
 
             except Exception as e:
-                # Retryable error (network)?
                 if self._is_retryable(e) and it.retry_count < retry_max:
                     it.retry_count += 1
-                    delay = retry_delay * (2 ** (it.retry_count - 1))  # exponential backoff
+                    delay = retry_delay * (2 ** (it.retry_count - 1))
                     it.state     = "downloading"
                     it.error_msg = (f"Network error, retrying "
                                     f"{it.retry_count}/{retry_max} in {delay}s…")
                     self.ui(self._update_row_ui, idx)
-
-                    # Wait the delay, checking for cancel every second
                     for _ in range(delay):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
                             break
                         time.sleep(1)
-                    continue  # → prochain tour de boucle
-
-                # Fatal error or retries exhausted
+                    continue
                 if it.retry_count >= retry_max and retry_max > 0:
                     it.error_msg = f"Failed after {it.retry_count} attempt(s): {e}"
                 else:
