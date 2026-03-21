@@ -530,7 +530,7 @@ class TurboDownloader(ctk.CTk):
         title_frame.pack(fill="x", padx=16, pady=(20, 4))
         ctk.CTkLabel(title_frame, text="⬇  TurboDownloader",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(title_frame, text="v2.6", text_color="#555555",
+        ctk.CTkLabel(title_frame, text="v2.5.1", text_color="#555555",
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
 
         # Séparateur
@@ -2045,9 +2045,17 @@ class TurboDownloader(ctk.CTk):
                     if is_remote_client:
                         # ── Mode client : envoyer chaque URL au serveur distant ──
                         for entry in all_confirmed:
-                            url  = entry[0]
-                            dest = entry[5] if len(entry) > 5 else default_dest
-                            result = self._remote_client.add_url(url, dest or None)
+                            url         = entry[0]
+                            wtype       = entry[2] if len(entry) > 2 else "http"
+                            format_id   = entry[3] if len(entry) > 3 else None
+                            audio_only  = entry[4] if len(entry) > 4 else False
+                            dest        = entry[5] if len(entry) > 5 else default_dest
+                            result = self._remote_client.add_url(
+                                url, dest or None,
+                                worker_type=wtype,
+                                format_id=format_id,
+                                audio_only=bool(audio_only),
+                            )
                             if result is None:
                                 _log.warning("Failed to send URL: %s", url[:80])
                             else:

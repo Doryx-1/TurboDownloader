@@ -49,8 +49,11 @@ try:
         model_config = {"extra": "ignore"}
 
     class AddURLRequest(BaseModel):
-        url: str
-        dest: Optional[str] = None
+        url:         str
+        dest:        Optional[str]  = None
+        worker_type: Optional[str]  = None   # "http" | "ytdlp" — auto-detect if None
+        format_id:   Optional[str]  = None   # yt-dlp format id
+        audio_only:  bool           = False  # yt-dlp audio-only mode
         model_config = {"extra": "ignore"}
 
 except ImportError:
@@ -558,15 +561,18 @@ class RemoteServer:
 
                 dest = req.dest or app_ref._settings.get("default_dest", "")
 
-                # Auto-detect worker type
+                # Worker type — use explicit if provided, else auto-detect
                 try:
                     import ytdlp_worker as _yw
-                    wtype = "ytdlp" if _yw.is_ytdlp_url(req.url) else "http"
+                    if req.worker_type:
+                        wtype = req.worker_type
+                    else:
+                        wtype = "ytdlp" if _yw.is_ytdlp_url(req.url) else "http"
                 except ImportError:
-                    wtype = "http"
+                    wtype = req.worker_type or "http"
 
                 # (url, rel_dir, worker_type, format_id, audio_only, dest, from_remote)
-                entry = (req.url, "", wtype, None, False, dest, True)
+                entry = (req.url, "", wtype, req.format_id, req.audio_only, dest, True)
                 app_ref._launch_downloads(
                     [entry],
                     workers=workers,
@@ -901,8 +907,17 @@ class RemoteClient:
     def get_status(self) -> Optional[dict]:
         return self._get("/status")
 
-    def add_url(self, url: str, dest: Optional[str] = None) -> Optional[dict]:
-        return self._post("/downloads/add", {"url": url, "dest": dest})
+    def add_url(self, url: str, dest: Optional[str] = None,
+                worker_type: Optional[str] = None,
+                format_id: Optional[str] = None,
+                audio_only: bool = False) -> Optional[dict]:
+        return self._post("/downloads/add", {
+            "url":         url,
+            "dest":        dest,
+            "worker_type": worker_type,
+            "format_id":   format_id,
+            "audio_only":  audio_only,
+        })
 
     def add_interactive(self, urls: list) -> Optional[dict]:
         """Injects URLs into TurboDownloader's input box and opens the native popup."""
