@@ -7,7 +7,9 @@ from collections import deque
 from typing import Optional
 from urllib.parse import urljoin, unquote
 from concurrent.futures import ThreadPoolExecutor
+from logger import get_logger
 
+_log = get_logger("downloader")
 import requests
 from bs4 import BeautifulSoup
 import customtkinter as ctk
@@ -186,7 +188,7 @@ class TurboDownloader(ctk.CTk):
                 pwd = self._settings.get("remote_client_password", "")
 
             if host and user and pwd:
-                print(f"[remote] Auto-connecting to {host}:{port}…")
+                _log.info("Auto-connecting to %s:%s...", host, port)
                 def _auto_connect():
                     try:
                         c = remote_server.RemoteClient(host, port, user, pwd)
@@ -203,16 +205,16 @@ class TurboDownloader(ctk.CTk):
                                 )
                             self._start_remote_dl_tracker()
                             self.ui(self._update_remote_status_bar)
-                            print(f"[remote] Auto-connect OK ✓")
+                            _log.info("Auto-connect OK")
                         else:
-                            print(f"[remote] Auto-connect failed: {msg}")
+                            _log.warning("Auto-connect failed: %s", msg)
                     except Exception as e:
-                        print(f"[remote] Auto-connect error: {e}")
+                        _log.error("Auto-connect error: %s", e)
                 import threading as _th
                 _th.Thread(target=_auto_connect, daemon=True,
                            name="AutoConnect").start()
             else:
-                print("[remote] Auto-connect skipped — missing host/user/password")
+                _log.debug("Auto-connect skipped — missing host/user/password")
 
     def _apply_remote_settings(self):
         """
@@ -391,10 +393,10 @@ class TurboDownloader(ctk.CTk):
                             server_to_shadow.pop(server_idx, None)
 
                 except Exception as e:
-                    print(f"[dl-tracker] Error: {e}")
+                    _log.debug("DL tracker error: %s", e)
 
         _th.Thread(target=_tracker, daemon=True, name="RemoteDLTracker").start()
-        print("[remote-client] Download tracker started")
+        _log.info("Download tracker started")
 
     def _sort_shadow_rows(self, force: bool = False):
         """Sorts shadow rows — active on top, finished at bottom.
@@ -528,7 +530,7 @@ class TurboDownloader(ctk.CTk):
         title_frame.pack(fill="x", padx=16, pady=(20, 4))
         ctk.CTkLabel(title_frame, text="⬇  TurboDownloader",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(title_frame, text="v2.5.1", text_color="#555555",
+        ctk.CTkLabel(title_frame, text="v2.6", text_color="#555555",
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
 
         # Séparateur
@@ -1769,7 +1771,7 @@ class TurboDownloader(ctk.CTk):
                             pass
 
                     if r.status_code == 416:
-                        print(f"[worker] 416 Range Not Satisfiable — retrying without resume")
+                        _log.debug("416 Range Not Satisfiable — retrying without resume")
                         it.resume_from = 0
                         it.downloaded  = 0
                         try:
@@ -2047,9 +2049,9 @@ class TurboDownloader(ctk.CTk):
                             dest = entry[5] if len(entry) > 5 else default_dest
                             result = self._remote_client.add_url(url, dest or None)
                             if result is None:
-                                print(f"[remote-client] Failed to send URL: {url}")
+                                _log.warning("Failed to send URL: %s", url[:80])
                             else:
-                                print(f"[remote-client] Sent to server: {url} → {dest}")
+                                _log.debug("Sent to server: %s", url[:80])
                                 self._add_remote_shadow_row(url, dest)
                         popup_done.set()
                     else:

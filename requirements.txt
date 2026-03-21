@@ -7,17 +7,15 @@
 #  Python 3.10+ required
 # ─────────────────────────────────────────────
 
-
 # ── Core (required) ───────────────────────────
 customtkinter>=5.2.0        # UI framework
 requests>=2.31.0            # HTTP downloads
 beautifulsoup4>=4.12.0      # HTML crawl / directory parsing
-Pillow>=10.0.0              # Image handling (CTk thumbnails)
+Pillow>=10.0.0              # Image handling + tray icon
 pystray>=0.24.0             # System tray icon
 
 # ── yt-dlp support (optional but recommended) ─
 yt-dlp>=2024.1.1            # Streaming downloads (YouTube, Vimeo, etc.)
-
 
 # ── Remote control server (optional) ──────────
 fastapi>=0.110.0            # REST API + WebSocket server
@@ -25,13 +23,12 @@ uvicorn[standard]>=0.29.0   # ASGI server (runs FastAPI)
 python-jose[cryptography]>=3.3.0  # JWT auth tokens
 bcrypt>=4.1.0               # Password hashing
 httpx>=0.27.0               # HTTP client (RemoteClient)
-cryptography>=42.0.0        # Self-signed SSL cert generation
-
+cryptography>=42.0.0        # Self-signed SSL cert + Fernet password encryption
+slowapi>=0.1.9              # Rate limiting on FastAPI endpoints (brute-force protection)
 
 # ── Desktop integration (optional) ────────────
 plyer>=2.1.0                # Desktop notifications (Windows/macOS/Linux)
 comtypes>=1.4.1             # Windows taskbar progress (ITaskbarList3) — Windows only
-
 
 # ── ffmpeg / Node.js bootstrap (optional) ─────
 nodeenv>=1.8.0              # Installs a local Node.js runtime for yt-dlp

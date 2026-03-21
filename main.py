@@ -5,6 +5,14 @@ import sys
 if __name__ == "__main__":
     multiprocessing.freeze_support()
 
+    # ── Logging setup ─────────────────────────────────────────────────────────
+    debug_mode = "--debug" in sys.argv
+    try:
+        from logger import setup_logging
+        setup_logging(debug=debug_mode)
+    except Exception:
+        pass   # non-blocking if logger not found
+
     # ── Custom protocol handler ───────────────────────────────────────────────
     # If launched with a turbodownloader:// URL as argv[1], extract it.
     # This happens when the browser extension opens the protocol link.

@@ -76,6 +76,7 @@ def load_settings() -> dict:
         "remote_username":      "",
         "remote_password_hash": "",
         "remote_jwt_secret":    "",
+        "remote_jwt_ttl_h":     24,    # JWT token validity: 1 / 8 / 24 / 168h
         # client-side connection info
         "remote_client_host":           "",
         "remote_client_port":           9988,
@@ -684,6 +685,27 @@ class SettingsPopup(ctk.CTkToplevel):
         self._ssl_row = r4
         self._render_ssl_row()
 
+        # JWT TTL + Revoke
+        r5 = ctk.CTkFrame(p, fg_color="transparent")
+        r5.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(r5, text="Token validity:", width=130, anchor="w").pack(side="left")
+        self._jwt_ttl_var = ctk.StringVar(
+            value=str(self._settings.get("remote_jwt_ttl_h", 24)))
+        ttl_menu = ctk.CTkOptionMenu(
+            r5, variable=self._jwt_ttl_var, width=100,
+            values=["1", "8", "24", "168"],
+        )
+        ttl_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(r5, text="hours",
+                     text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left")
+        ctk.CTkButton(
+            r5, text="🔄 Revoke all tokens", width=160,
+            fg_color="transparent", border_width=1, border_color="#5a1515",
+            text_color="#cc4444", hover_color="#2a1010",
+            font=ctk.CTkFont(size=11),
+            command=self._revoke_tokens,
+        ).pack(side="right", padx=(0, 0))
+
         # Missing deps warning
         try:
             from remote_server import DEPS_OK, DEPS_MISSING
@@ -726,6 +748,23 @@ class SettingsPopup(ctk.CTkToplevel):
         from remote_server import ensure_ssl_cert
         ensure_ssl_cert()
         self._render_ssl_row()
+
+    def _revoke_tokens(self):
+        """Regenerates the JWT secret — invalidates all existing tokens immediately."""
+        import secrets as _sec
+        self._settings["remote_jwt_secret"] = _sec.token_hex(32)
+        from settings_popup import save_settings
+        save_settings(self._settings)
+        # Notify UI
+        import customtkinter as _ctk
+        popup = _ctk.CTkToplevel(self)
+        popup.title("Tokens revoked")
+        popup.geometry("360x120")
+        popup.grab_set()
+        _ctk.CTkLabel(popup,
+                      text="✓ All tokens revoked.\nExisting clients must re-login.",
+                      font=_ctk.CTkFont(size=13)).pack(expand=True)
+        _ctk.CTkButton(popup, text="OK", command=popup.destroy).pack(pady=(0, 14))
 
     def _on_remote_toggle(self):
         if self._remote_enabled_var.get():
@@ -840,6 +879,8 @@ class SettingsPopup(ctk.CTkToplevel):
         else:
             self._rclient_status_lbl.configure(
                 text=f"✗ {msg[:60]}", text_color="#cc4444")
+
+
 
     def _on_seg_slider(self, val):
         n = int(round(val))
@@ -982,6 +1023,12 @@ class SettingsPopup(ctk.CTkToplevel):
             if pwd:   # blank = keep existing hash
                 from remote_server import hash_password
                 self._settings["remote_password_hash"] = hash_password(pwd)
+
+        if getattr(self, "_jwt_ttl_var", None):
+            try:
+                self._settings["remote_jwt_ttl_h"] = int(self._jwt_ttl_var.get())
+            except ValueError:
+                pass
 
         # ── Remote client ───────────────────────────────────────────────
         if getattr(self, "_rclient_host_e", None):

@@ -20,6 +20,9 @@ import threading
 import time
 import datetime
 from typing import Optional, TYPE_CHECKING
+from logger import get_logger
+
+_log = get_logger("remote_server")
 
 if TYPE_CHECKING:
     pass   # avoid circular imports — TurboDownloader typed as Any below
@@ -31,7 +34,8 @@ SSL_DIR    = CONFIG_DIR / "ssl"
 CERT_FILE  = SSL_DIR / "cert.pem"
 KEY_FILE   = SSL_DIR / "key.pem"
 
-TOKEN_TTL_H  = 24          # JWT validity in hours
+TOKEN_TTL_H  = 24          # JWT validity in hours (default — overridable in settings)
+TOKEN_TTL_OPTIONS = [1, 8, 24, 168]  # 1h / 8h / 24h / 7 days
 DEFAULT_PORT = 9988
 
 # ── Pydantic models — defined at module level (required for Pydantic v2 + Python 3.14) ──
@@ -206,13 +210,22 @@ def _jwt_secret(settings: dict) -> str:
 
 def create_token(settings: dict) -> str:
     from jose import jwt
-    secret = _jwt_secret(settings)
+    secret  = _jwt_secret(settings)
+    ttl     = int(settings.get("remote_jwt_ttl_h", TOKEN_TTL_H))
+    if ttl not in TOKEN_TTL_OPTIONS:
+        ttl = TOKEN_TTL_H
     payload = {
         "sub": "turbodownloader",
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=TOKEN_TTL_H),
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=ttl),
         "iat": datetime.datetime.utcnow(),
     }
     return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def get_token_ttl(settings: dict) -> int:
+    """Returns the configured JWT TTL in hours."""
+    ttl = int(settings.get("remote_jwt_ttl_h", TOKEN_TTL_H))
+    return ttl if ttl in TOKEN_TTL_OPTIONS else TOKEN_TTL_H
 
 
 def verify_token(token: str, settings: dict) -> bool:
@@ -248,7 +261,7 @@ def generate_local_token() -> str:
             import os as _os
             _os.chmod(_LOCAL_TOKEN_FILE, 0o600)
     except Exception as e:
-        print(f"[remote] Could not write local token: {e}")
+        _log.warning("Could not write local token: %s", e)
     return token
 
 
@@ -287,7 +300,7 @@ class RemoteServer:
 
         if not DEPS_OK:
             msg = f"Remote server cannot start.\nMissing packages: {DEPS_MISSING}\n\nDEPS_OK={DEPS_OK}"
-            print(f"[remote] {msg}")
+            _log.error(msg)
             self._show_error(msg)
             return False
 
@@ -300,7 +313,7 @@ class RemoteServer:
                 msg = (f"Remote server cannot start.\nSSL certificate generation failed.\n\n"
                        f"CERT_FILE={CERT_FILE}\nKEY_FILE={KEY_FILE}\n"
                        f"Exists: cert={CERT_FILE.exists()}, key={KEY_FILE.exists()}")
-                print(f"[remote] {msg}")
+                _log.error(msg)
                 self._show_error(msg)
                 return False
 
@@ -359,7 +372,7 @@ class RemoteServer:
         except Exception as e:
             import traceback
             msg = f"Remote server start error:\n{e}\n\n{traceback.format_exc()}"
-            print(f"[remote] {msg}")
+            _log.error(msg)
             self._show_error(msg)
             return False
 
@@ -465,7 +478,19 @@ class RemoteServer:
                 raise HTTPException(status_code=403, detail="Local access only")
             if not verify_local_token(body.get("token", "")):
                 raise HTTPException(status_code=401, detail="Invalid local token")
-            return {"token": create_token(settings), "expires_in_h": TOKEN_TTL_H}
+            return {"token": create_token(settings), "expires_in_h": get_token_ttl(settings)}
+
+        @api.post("/auth/revoke")
+        def revoke_tokens(_ = Depends(require_auth)):
+            """
+            Revokes all existing JWT tokens by regenerating the JWT secret.
+            All currently issued tokens become invalid immediately.
+            """
+            import secrets as _sec
+            settings["remote_jwt_secret"] = _sec.token_hex(32)
+            from settings_popup import save_settings as _save
+            _save(settings)
+            return {"status": "revoked", "message": "All tokens invalidated — re-login required"}
 
         # Brute-force tracking per IP
         _fail_log: dict = {}
@@ -490,7 +515,7 @@ class RemoteServer:
                 _t.sleep(min(0.5 * len(attempts), 5.0))
                 raise HTTPException(status_code=401, detail="Bad credentials")
             _fail_log.pop(ip, None)
-            return {"token": create_token(settings), "expires_in_h": TOKEN_TTL_H}
+            return {"token": create_token(settings), "expires_in_h": get_token_ttl(settings)}
 
         @api.get("/status")
         def get_status(_ = Depends(require_auth)):
@@ -548,7 +573,7 @@ class RemoteServer:
                     keep_tree=False,
                     dest_override=dest,
                 )
-                print(f"[remote-server] Queued ({wtype}): {req.url} → {dest}")
+                _log.info("Queued (%s): %s", wtype, req.url[:80])
 
             app_ref.after(0, _inject)
             return {"status": "queued", "url": req.url, "dest": req.dest, "type": "auto"}
@@ -578,10 +603,10 @@ class RemoteServer:
                     # ── Trigger the normal download flow (opens tree_popup) ──
                     app_ref.start_downloads()
 
-                    print(f"[remote-server] Interactive inject: {req.url[:80]}")
+                    _log.info("Interactive inject: %s", req.url[:80])
 
                 except Exception as e:
-                    print(f"[remote-server] Interactive inject error: {e}")
+                    _log.error("Interactive inject error: %s", e)
 
             app_ref.after(0, _inject)
             return {"status": "interactive", "url": req.url}
@@ -788,7 +813,7 @@ class RemoteClient:
             return False, "httpx package missing"
 
         try:
-            print(f"[remote-client] Connecting to {self._base}...")
+            _log.debug("Connecting to %s...", self._base)
             r = self._httpx.post(
                 f"{self._base}/auth/login",
                 json={"username": self._user, "password": self._pass},
@@ -851,16 +876,16 @@ class RemoteClient:
                     # Try to reconnect
                     if max_retries == 0 or retries < max_retries:
                         retries += 1
-                        print(f"[remote-client] Reconnect attempt {retries}…")
+                        _log.debug("Reconnect attempt %d...", retries)
                         ok, msg = self.connect()
                         if ok:
-                            print(f"[remote-client] Reconnect OK ✓")
+                            _log.info("Reconnect OK")
                             was_connected = True
                             retries = 0
                             if on_reconnect:
                                 on_reconnect()
                         else:
-                            print(f"[remote-client] Reconnect failed: {msg}")
+                            _log.warning("Reconnect failed: %s", msg)
 
         _th.Thread(target=_heartbeat, daemon=True, name="RemoteHeartbeat").start()
 
