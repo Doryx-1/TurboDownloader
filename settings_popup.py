@@ -9,6 +9,33 @@ from tkinter import filedialog
 # Config file path: C:/Users/<user>/.turbodownloader/settings.json
 CONFIG_DIR  = pathlib.Path.home() / ".turbodownloader"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
+DEST_HISTORY_FILE = CONFIG_DIR / "dest_history.json"
+DEST_HISTORY_MAX  = 10
+
+
+def load_dest_history() -> list:
+    """Loads the destination history from its dedicated file."""
+    if DEST_HISTORY_FILE.exists():
+        try:
+            import json as _json
+            data = _json.loads(DEST_HISTORY_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def save_dest_history(history: list):
+    """Saves the destination history to its dedicated file."""
+    import json as _json
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        DEST_HISTORY_FILE.write_text(
+            _json.dumps(history[:DEST_HISTORY_MAX], ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[dest_history] save error: {e}")
 
 # Default temp folder
 DEFAULT_TEMP_DIR = str(CONFIG_DIR / "tmp")
@@ -57,7 +84,7 @@ def load_settings() -> dict:
         "remote_client_save_password":  False,
         "remote_client_autoconnect":    False,
         "remote_client_autoretry":      True,
-        # destination history
+        # destination history — loaded from dedicated file, not settings.json
         "dest_history":                 [],
     }
     if CONFIG_FILE.exists():
@@ -70,16 +97,23 @@ def load_settings() -> dict:
             print(f"[settings] read error: {e}")
     else:
         print("[settings] config file not found, using defaults")
+
+    # Override dest_history from its dedicated file (more up-to-date)
+    defaults["dest_history"] = load_dest_history()
     return defaults
 
 
 def save_settings(settings: dict):
-    """Saves settings to disk."""
+    """Saves settings to disk. Restricts file permissions on Unix."""
+    import sys as _sys
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
-        print(f"[settings] saved: {settings}")
+        # Restrict read permissions — file contains JWT secret + encrypted password
+        if _sys.platform != "win32":
+            import os as _os
+            _os.chmod(CONFIG_FILE, 0o600)
     except Exception as e:
         print(f"[settings] save error: {e}")
 

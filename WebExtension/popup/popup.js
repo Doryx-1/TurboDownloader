@@ -30,7 +30,6 @@
   const stored = await chrome.storage.local.get({
     intercept: false,
     dest:      "",
-    username:  "",
   });
 
   interceptToggle.checked = stored.intercept;
@@ -49,21 +48,22 @@
   // ── Server status ──────────────────────────────────────────────────────────
 
   async function checkStatus() {
-    if (!stored.username) {
-      setStatus("disconnected", "Not configured — open Settings ⚙", "");
-      return;
-    }
-    const { status } = await sendMsg({ type: "GET_STATUS" });
-    if (status) {
-      const active = (status.downloads || []).filter(d =>
+    // Test connection via local token — no credentials needed
+    const result = await sendMsg({ type: "TEST_CONNECTION" });
+    if (result?.ok) {
+      const { status } = await sendMsg({ type: "GET_STATUS" });
+      const active = (status?.downloads || []).filter(d =>
         ["downloading", "waiting"].includes(d.state)
       ).length;
       setStatus("connected",
-        `Connected — ${status.version || "TurboDownloader"}`,
+        "Connected — TurboDownloader",
         active > 0 ? `${active} active` : ""
       );
     } else {
-      setStatus("disconnected", "Cannot reach TurboDownloader", "");
+      setStatus("disconnected",
+        "Cannot reach TurboDownloader",
+        result?.error ? result.error.slice(0, 50) : "Make sure TD is running"
+      );
     }
   }
 

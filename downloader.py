@@ -100,6 +100,11 @@ class TurboDownloader(ctk.CTk):
         # Remote control server (started if enabled in settings)
         self._remote_server: remote_server.RemoteServer = None
         self._remote_client = None   # RemoteClient instance when connected as client
+
+        # Shadow rows — tracks downloads running on remote server (client mode)
+        self._shadow_rows:      dict = {}
+        self._shadow_counter:   int  = 0
+        self._shadow_last_order: list = []
         self._start_remote_if_enabled()
 
         self._build_ui()
@@ -146,14 +151,14 @@ class TurboDownloader(ctk.CTk):
         """Adds a destination folder to the recent history (max 10, no duplicates)."""
         if not dest:
             return
-        history = self._settings.get("dest_history", [])
+        from settings_popup import load_dest_history, save_dest_history
+        history = load_dest_history()
         if dest in history:
             history.remove(dest)
         history.insert(0, dest)
+        save_dest_history(history)
+        # Keep in-memory settings in sync for popups that read it this session
         self._settings["dest_history"] = history[:10]
-        # Persist immediately (lightweight — just the history key)
-        from settings_popup import save_settings
-        save_settings(self._settings)
 
     def _start_remote_if_enabled(self):
         """Starts the remote control server if enabled in settings.
@@ -311,14 +316,14 @@ class TurboDownloader(ctk.CTk):
                         if server_idx not in server_to_shadow:
                             existing = next(
                                 (s_idx for s_idx, s in
-                                 getattr(self, "_shadow_rows", {}).items()
+                                 self._shadow_rows.items()
                                  if s.get("server_idx") == server_idx
                                  or s.get("url") == url),
                                 None
                             )
                             if existing is not None:
                                 server_to_shadow[server_idx] = existing
-                                if existing in getattr(self, "_shadow_rows", {}):
+                                if existing in self._shadow_rows:
                                     self._shadow_rows[existing]["server_idx"] = server_idx
                             else:
                                 ev = _th.Event()
@@ -333,7 +338,7 @@ class TurboDownloader(ctk.CTk):
                         shadow_idx = server_to_shadow.get(server_idx)
                         if shadow_idx is None:
                             continue
-                        shadow = getattr(self, "_shadow_rows", {}).get(shadow_idx)
+                        shadow = self._shadow_rows.get(shadow_idx)
                         if not shadow:
                             server_to_shadow.pop(server_idx, None)
                             continue
@@ -359,7 +364,7 @@ class TurboDownloader(ctk.CTk):
                                     sp=speed, fn=fname, final=is_final,
                                     paused=is_paused, si=shadow_idx,
                                     srv=server_idx):
-                            if si not in getattr(self, "_shadow_rows", {}):
+                            if si not in self._shadow_rows:
                                 return
                             if fn:
                                 r.name_lbl.configure(text=f"📡 {fn}")
@@ -391,20 +396,26 @@ class TurboDownloader(ctk.CTk):
         _th.Thread(target=_tracker, daemon=True, name="RemoteDLTracker").start()
         print("[remote-client] Download tracker started")
 
-    def _sort_shadow_rows(self):
-        """Sorts shadow rows — active on top, finished at bottom."""
-        shadows = getattr(self, "_shadow_rows", {})
+    def _sort_shadow_rows(self, force: bool = False):
+        """Sorts shadow rows — active on top, finished at bottom.
+        Only re-packs widgets when the order has actually changed (dirty flag).
+        """
+        shadows = self._shadow_rows
         if len(shadows) < 2:
             return
         PRIORITY = {"downloading": 0, "waiting": 1, "paused": 2,
                     "moving": 3, "done": 4, "canceled": 5, "error": 6}
-        sorted_items = sorted(
+        sorted_keys = [k for k, _ in sorted(
             shadows.items(),
             key=lambda kv: PRIORITY.get(kv[1].get("state", "done"), 4)
-        )
-        for _, shadow in sorted_items:
-            shadow["row"].frame.pack_forget()
-            shadow["row"].frame.pack(fill="x", pady=3, padx=4)
+        )]
+        # Only re-pack if order changed or forced
+        if not force and sorted_keys == getattr(self, "_shadow_last_order", None):
+            return
+        self._shadow_last_order = sorted_keys
+        for k in sorted_keys:
+            shadows[k]["row"].frame.pack_forget()
+            shadows[k]["row"].frame.pack(fill="x", pady=3, padx=4)
 
     def _remote_clear_done(self):
         """Removes finished shadow rows locally and clears them on the server."""
@@ -412,7 +423,7 @@ class TurboDownloader(ctk.CTk):
         if client:
             threading.Thread(target=client.clear_done, daemon=True).start()
         to_remove = [
-            s_idx for s_idx, s in getattr(self, "_shadow_rows", {}).items()
+            s_idx for s_idx, s in self._shadow_rows.items()
             if s.get("state", "") in ("done", "error", "canceled")
         ]
         for s_idx in to_remove:
@@ -954,11 +965,6 @@ class TurboDownloader(ctk.CTk):
         Returns the shadow_idx assigned.
         """
         import os as _os
-        if not hasattr(self, "_shadow_rows"):
-            self._shadow_rows = {}
-        if not hasattr(self, "_shadow_counter"):
-            self._shadow_counter = 0
-
         name = _os.path.basename(url.split("?")[0]) or url[:60]
         self._shadow_counter -= 1
         shadow_idx = self._shadow_counter
@@ -1020,7 +1026,7 @@ class TurboDownloader(ctk.CTk):
 
     def _remove_shadow_row(self, shadow_idx: int):
         """Removes a shadow row from the client display."""
-        shadow = getattr(self, "_shadow_rows", {}).pop(shadow_idx, None)
+        shadow = self._shadow_rows.pop(shadow_idx, None)
         if shadow:
             shadow["row"].frame.destroy()
         self._refresh_filter_counts()
