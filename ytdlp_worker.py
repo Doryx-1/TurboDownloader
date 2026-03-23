@@ -273,6 +273,28 @@ def run(idx: int, app) -> None:
     dest_dir = os.path.dirname(it.dest_path)
     os.makedirs(dest_dir, exist_ok=True)
 
+    # ── File-exists check ────────────────────────────────────────────────────
+    # For yt-dlp, dest_path is a placeholder (real name known after download)
+    # We only check if the exact dest_path already exists as a complete file.
+    # Note: yt-dlp manages its own temp files so we skip .part check here.
+    if os.path.exists(it.dest_path):
+        exists_action = app._check_file_exists(it)
+        if exists_action == "skip":
+            it.state = "skipped"
+            app.ui(app._update_row_ui, idx)
+            app.ui(app._refresh_filter_counts)
+            return
+        elif exists_action == "rename":
+            it.dest_path = app._make_unique_path(it.dest_path)
+            it.filename  = os.path.basename(it.dest_path)
+            dest_dir     = os.path.dirname(it.dest_path)
+            app.ui(app._update_row_ui, idx)
+        elif exists_action == "replace":
+            try:
+                os.remove(it.dest_path)
+            except OSError:
+                pass
+
     # ── Progress hook ────────────────────────────────────────────────────────
     _last_ui_update = 0.0   # throttle: max 5 UI updates/s per item
 

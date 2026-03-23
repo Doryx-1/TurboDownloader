@@ -66,8 +66,10 @@ def load_settings() -> dict:
         "throttle":      0,
         "notifications": True,
         "minimize_to_tray": True,
+        "check_updates":    True,    # check for updates at startup
         "workers":       10,
         "segments":      4,
+        "file_exists_action": "ask",   # ask / replace / skip / rename
         "extensions":    DEFAULT_EXTENSIONS.copy(),
         "all_files":     False,
         # ── Remote control ─────────────────────
@@ -367,6 +369,24 @@ class SettingsPopup(ctk.CTkToplevel):
 
         ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 4))
 
+        self._section(p, "File already exists",
+                      "What to do when the destination file already exists.")
+        row_fe = ctk.CTkFrame(p, fg_color="transparent")
+        row_fe.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(row_fe, text="Default action:", width=130, anchor="w").pack(side="left")
+        self._file_exists_var = ctk.StringVar(
+            value=self._settings.get("file_exists_action", "ask"))
+        fe_menu = ctk.CTkOptionMenu(
+            row_fe, variable=self._file_exists_var, width=160,
+            values=["ask", "replace", "skip", "rename"],
+        )
+        fe_menu.pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(row_fe,
+                     text="ask = popup each time  |  rename = add _2, _3…",
+                     text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left")
+
+        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 4))
+
         self._section(p, "yt-dlp / streaming",
                       "Dependencies for streaming URL downloads (YouTube, Vimeo, etc.)")
         row_ff = ctk.CTkFrame(p, fg_color="transparent")
@@ -481,13 +501,33 @@ class SettingsPopup(ctk.CTkToplevel):
         info = ctk.CTkFrame(p, fg_color="transparent")
         info.pack(fill="x", padx=20, pady=(0, 8))
         ctk.CTkLabel(info, text="Version:", width=130, anchor="w").pack(side="left")
-        ctk.CTkLabel(info, text="2.7", text_color="gray").pack(side="left")
+        ctk.CTkLabel(info, text="2.7.1", text_color="gray").pack(side="left")
+
+        # Check for updates toggle + manual button
+        row_upd = ctk.CTkFrame(p, fg_color="transparent")
+        row_upd.pack(fill="x", padx=20, pady=(0, 8))
+        self._check_updates_var = ctk.BooleanVar(
+            value=self._settings.get("check_updates", True))
+        ctk.CTkCheckBox(row_upd,
+                        text="Check for updates at startup",
+                        variable=self._check_updates_var).pack(side="left")
+        ctk.CTkButton(row_upd, text="Check now",
+                      width=110, fg_color="transparent",
+                      border_width=1, border_color="#3a3a3a",
+                      hover_color="#2a2a2a",
+                      font=ctk.CTkFont(size=11),
+                      command=self._manual_check_update).pack(side="right")
 
         info2 = ctk.CTkFrame(p, fg_color="transparent")
         info2.pack(fill="x", padx=20)
         ctk.CTkLabel(info2, text="Config folder:", width=130, anchor="w").pack(side="left")
         ctk.CTkLabel(info2, text="~/.turbodownloader/",
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left")
+
+    def _manual_check_update(self):
+        """Triggers a manual update check — shows popup even if up to date."""
+        import updater as _upd
+        _upd.check_for_updates(self.master, silent=False)
 
     @staticmethod
     def _section(parent, title: str, subtitle: str):
@@ -983,6 +1023,10 @@ class SettingsPopup(ctk.CTkToplevel):
 
         # Notifications
         self._settings["notifications"] = self._notif_var.get()
+        if getattr(self, "_file_exists_var", None):
+            self._settings["file_exists_action"] = self._file_exists_var.get()
+        if getattr(self, "_check_updates_var", None):
+            self._settings["check_updates"] = self._check_updates_var.get()
 
         # System — tray + startup
         if getattr(self, "_minimize_tray_var", None):

@@ -29,6 +29,7 @@ from ytdlp_popup import YtdlpPopup
 import ffmpeg_setup
 import remote_server
 import tray as tray_module
+import updater as _updater
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
@@ -127,6 +128,7 @@ class TurboDownloader(ctk.CTk):
         self._taskbar: TaskbarProgress = None
         self.after(500, self._init_taskbar)
         self.after(1000, self._check_dependencies)
+        self.after(3000, self._check_for_updates_startup)   # 3s delay — let UI settle
         self.after(600, self._update_remote_status_bar)   # refresh badge after UI ready
 
         self.after(80, self._process_ui_queue)
@@ -486,6 +488,11 @@ class TurboDownloader(ctk.CTk):
             ),
         )
 
+    def _check_for_updates_startup(self):
+        """Checks for updates at startup — silent if up to date."""
+        if self._settings.get("check_updates", True):
+            _updater.check_for_updates(self, silent=True)
+
     def _check_dependencies(self):
         """Checks ffmpeg and Node.js availability. Installs Node if missing."""
         status = ffmpeg_setup.get_status()
@@ -530,7 +537,7 @@ class TurboDownloader(ctk.CTk):
         title_frame.pack(fill="x", padx=16, pady=(20, 4))
         ctk.CTkLabel(title_frame, text="⬇  TurboDownloader",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(title_frame, text="v2.7", text_color="#555555",
+        ctk.CTkLabel(title_frame, text="v2.7.1", text_color="#555555",
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
 
         # Séparateur
