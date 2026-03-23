@@ -29,6 +29,7 @@ from ytdlp_popup import YtdlpPopup
 import ffmpeg_setup
 import remote_server
 import tray as tray_module
+import updater as _updater
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
