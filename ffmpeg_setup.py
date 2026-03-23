@@ -38,16 +38,31 @@ def ffmpeg_path() -> str | None:
     Returns the path to a working ffmpeg binary, or None.
 
     Search order:
-    1. ffmpeg.exe next to the script / PyInstaller bundle
-    2. System PATH
+    1. ffmpeg.exe next to the script / PyInstaller bundle (_MEIPASS/_internal)
+    2. ffmpeg.exe next to sys.executable (handles PyInstaller edge cases)
+    3. System PATH
     """
-    # 1. Local binary (bundled or placed by developer)
-    local = _app_dir() / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    fname = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+
+    # 1. PyInstaller _MEIPASS / script directory
+    local = _app_dir() / fname
     if local.exists():
         return str(local)
 
-    # 2. System PATH
-    found = shutil.which("ffmpeg")
+    # 2. Next to the actual exe — handles cases where _MEIPASS differs
+    #    from the exe location (e.g. onefile mode, or running as service)
+    exe_dir = pathlib.Path(sys.executable).parent
+    local2  = exe_dir / fname
+    if local2.exists():
+        return str(local2)
+
+    # Also check _internal subfolder next to exe (PyInstaller onedir layout)
+    local3 = exe_dir / "_internal" / fname
+    if local3.exists():
+        return str(local3)
+
+    # 3. System PATH
+    found = shutil.which(fname)
     if found:
         return found
 

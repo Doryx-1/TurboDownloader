@@ -481,7 +481,7 @@ class SettingsPopup(ctk.CTkToplevel):
         info = ctk.CTkFrame(p, fg_color="transparent")
         info.pack(fill="x", padx=20, pady=(0, 8))
         ctk.CTkLabel(info, text="Version:", width=130, anchor="w").pack(side="left")
-        ctk.CTkLabel(info, text="2.5.1", text_color="gray").pack(side="left")
+        ctk.CTkLabel(info, text="2.7", text_color="gray").pack(side="left")
 
         info2 = ctk.CTkFrame(p, fg_color="transparent")
         info2.pack(fill="x", padx=20)

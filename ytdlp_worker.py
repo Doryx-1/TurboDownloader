@@ -316,6 +316,12 @@ def run(idx: int, app) -> None:
     # ── yt-dlp options ───────────────────────────────────────────────────────
     has_ffmpeg = _ffmpeg_available()
 
+    # Log ffmpeg status — utile pour débugger les problèmes de conversion
+    import logging as _logging
+    _wlog = _logging.getLogger("turbodownloader.ytdlp_worker")
+    _wlog.debug("ffmpeg available: %s | path: %s | audio_only: %s | format_id: %s",
+                has_ffmpeg, ffmpeg_setup.ffmpeg_path(), audio_only, format_id)
+
     if audio_only:
         if has_ffmpeg:
             # Force audio-only stream — never match a video format
@@ -323,7 +329,11 @@ def run(idx: int, app) -> None:
             # FFmpegExtractAudio then converts it to mp3
             fmt = "bestaudio"
         else:
-            # No ffmpeg → prefer natively playable formats
+            # No ffmpeg on this machine → can't convert to mp3
+            # Warn the user via error_msg but still download best audio
+            _wlog.warning("Audio-only requested but ffmpeg not found — will download m4a/webm, not mp3")
+            it.error_msg = "⚠ ffmpeg not found on server — downloading best audio (not mp3)"
+            app.ui(app._update_row_ui, idx)
             fmt = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
     elif format_id:
         # Specific resolution chosen in popup
