@@ -500,18 +500,29 @@ class YtdlpPopup(ctk.CTkToplevel):
                 continue
 
             if meta.get("type") == "playlist":
-                entry_vars = self._playlist_vars.get(url, {})
-                for entry in meta.get("entries", []):
+                entry_vars  = self._playlist_vars.get(url, {})
+                all_entries = meta.get("entries", [])
+                # Count only checked entries for playlist_total
+                checked = [e for e in all_entries
+                           if not (entry_vars.get(e["url"]) and not entry_vars[e["url"]].get())]
+                total_checked = len(checked)
+                idx_counter   = 0
+                for entry in all_entries:
                     eurl = entry["url"]
                     var  = entry_vars.get(eurl)
                     if var and not var.get():
                         continue
+                    idx_counter += 1
                     confirmed.append({
-                        "url":        eurl,
-                        "format_id":  self._resolve_format(quality_key, entry.get("qualities", [])),
-                        "audio_only": audio_only,
-                        "dest":       dest,
-                        "title":      entry.get("title", ""),
+                        "url":            eurl,
+                        "format_id":      self._resolve_format(quality_key, entry.get("qualities", [])),
+                        "audio_only":     audio_only,
+                        "dest":           dest,
+                        "title":          entry.get("title", ""),
+                        "playlist_url":   url,
+                        "playlist_title": meta.get("title", ""),
+                        "playlist_index": idx_counter,
+                        "playlist_total": total_checked,
                     })
             else:
                 confirmed.append({

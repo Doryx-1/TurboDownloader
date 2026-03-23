@@ -29,7 +29,6 @@ from ytdlp_popup import YtdlpPopup
 import ffmpeg_setup
 import remote_server
 import tray as tray_module
-import updater as _updater
 
 
 CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
@@ -128,7 +127,6 @@ class TurboDownloader(ctk.CTk):
         self._taskbar: TaskbarProgress = None
         self.after(500, self._init_taskbar)
         self.after(1000, self._check_dependencies)
-        self.after(3000, self._check_for_updates_startup)   # 3s delay — let UI settle
         self.after(600, self._update_remote_status_bar)   # refresh badge after UI ready
 
         self.after(80, self._process_ui_queue)
@@ -487,11 +485,6 @@ class TurboDownloader(ctk.CTk):
                 self._on_start(),
             ),
         )
-
-    def _check_for_updates_startup(self):
-        """Checks for updates at startup — silent if up to date."""
-        if self._settings.get("check_updates", True):
-            _updater.check_for_updates(self, silent=True)
 
     def _check_dependencies(self):
         """Checks ffmpeg and Node.js availability. Installs Node if missing."""
@@ -950,6 +943,7 @@ class TurboDownloader(ctk.CTk):
     # ----------------------------------------------------------------- Gestion des rows
 
     def _add_row_for_item(self, idx: int, item: DownloadItem):
+        from widgets import PlaylistGroupRow
         display_name = item.filename
         if item.from_remote:
             display_name = f"📡 {item.filename}"
@@ -963,6 +957,34 @@ class TurboDownloader(ctk.CTk):
         if item.from_remote:
             row.frame.configure(border_color="#1a3a5a")
             row.name_lbl.configure(text_color="#7ab8e8")
+
+        # ── Playlist group ────────────────────────────────────────────────────
+        gid = getattr(item, "playlist_group_id", None)
+        if gid and getattr(item, "playlist_total", 0) > 1:
+            if not hasattr(self, "_playlist_groups"):
+                self._playlist_groups: dict = {}
+            if gid not in self._playlist_groups:
+                title = getattr(item, "playlist_group_title", "") or "Playlist"
+                total = getattr(item, "playlist_total", 0)
+                def _cancel_all(g=gid):
+                    for i, it in list(self.items.items()):
+                        if getattr(it, "playlist_group_id", None) == g:
+                            self.cancel_one(i)
+                def _remove_all(g=gid):
+                    for i, it in list(self.items.items()):
+                        if getattr(it, "playlist_group_id", None) == g:
+                            self.remove_one(i)
+                    grp = self._playlist_groups.pop(g, None)
+                    if grp:
+                        grp.frame.destroy()
+                self._playlist_groups[gid] = PlaylistGroupRow(
+                    self.scroll, title, total,
+                    on_cancel_all=_cancel_all,
+                    on_remove_all=_remove_all,
+                )
+            self._playlist_groups[gid].add_child(idx, row)
+        # ─────────────────────────────────────────────────────────────────────
+
         self.rows[idx] = row
         self._apply_filter_to_row(idx)
 
@@ -1267,6 +1289,16 @@ class TurboDownloader(ctk.CTk):
             row.pause_btn.configure(state="disabled", text="⏸", fg_color="transparent")
             row.cancel_btn.configure(state="disabled")
             row.remove_btn.configure(state="disabled")
+        # ── Rafraîchir la progression du groupe playlist ─────────────────────
+        gid = getattr(it, "playlist_group_id", None)
+        if gid and hasattr(self, "_playlist_groups") and gid in self._playlist_groups:
+            total = getattr(it, "playlist_total", 0)
+            done  = sum(1 for i2, it2 in self.items.items()
+                        if getattr(it2, "playlist_group_id", None) == gid
+                        and it2.state in ("done", "error", "canceled", "skipped"))
+            self._playlist_groups[gid].update_progress(done, total)
+        # ────────────────────────────────────────────────────────────────────
+
         else:  # waiting
             row.pause_btn.configure(state="disabled", text="⏸", fg_color="transparent")
             row.cancel_btn.configure(state="normal")
@@ -2088,13 +2120,30 @@ class TurboDownloader(ctk.CTk):
                     _try_launch()
 
                 def on_ytdlp_confirm(items: list):
+                    import uuid as _uuid
+                    # Build group_id per playlist_url
+                    group_ids: dict = {}
+                    for item in items:
+                        purl = item.get("playlist_url")
+                        if purl and item.get("playlist_total", 0) > 1:
+                            if purl not in group_ids:
+                                group_ids[purl] = _uuid.uuid4().hex[:8]
                     for item in items:
                         dest = item.get("dest", default_dest)
                         self._record_dest_history(dest)
-                        ytdlp_confirmed.append((item["url"], "", "ytdlp",
-                                                item["format_id"],
-                                                item["audio_only"],
-                                                dest))
+                        purl  = item.get("playlist_url")
+                        gid   = group_ids.get(purl) if purl else None
+                        ytdlp_confirmed.append((
+                            item["url"], "", "ytdlp",
+                            item["format_id"],
+                            item["audio_only"],
+                            dest,
+                            False,                           # from_remote
+                            gid,                             # playlist_group_id
+                            item.get("playlist_title", ""),  # playlist_group_title
+                            item.get("playlist_index", 0),   # playlist_index
+                            item.get("playlist_total", 0),   # playlist_total
+                        ))
                     ytdlp_done.set()
                     _try_launch()
 
@@ -2161,13 +2210,17 @@ class TurboDownloader(ctk.CTk):
 
         def _make_item(entry, base) -> tuple:
             """Builds a (idx, DownloadItem) pair from a file entry. Pure data — no UI."""
-            file_url   = entry[0]
-            rel_dir    = entry[1] if len(entry) > 1 else ""
-            wtype      = entry[2] if len(entry) > 2 else "http"
-            format_id  = entry[3] if len(entry) > 3 else None
-            audio_only = entry[4] if len(entry) > 4 else False
-            entry_dest = entry[5] if len(entry) > 5 else ""
+            file_url    = entry[0]
+            rel_dir     = entry[1] if len(entry) > 1 else ""
+            wtype       = entry[2] if len(entry) > 2 else "http"
+            format_id   = entry[3] if len(entry) > 3 else None
+            audio_only  = entry[4] if len(entry) > 4 else False
+            entry_dest  = entry[5] if len(entry) > 5 else ""
             from_remote = entry[6] if len(entry) > 6 else False
+            group_id    = entry[7] if len(entry) > 7 else None
+            group_title = entry[8] if len(entry) > 8 else ""
+            group_index = entry[9] if len(entry) > 9 else 0
+            group_total = entry[10] if len(entry) > 10 else 0
 
             effective_base = entry_dest or base
             name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
@@ -2202,21 +2255,31 @@ class TurboDownloader(ctk.CTk):
                 it.retry_count  = 0
                 it.segments     = []
                 it.speed_window.clear()
-                it.worker_type   = wtype
-                it.yt_format_id  = format_id
-                it.yt_audio_only = audio_only  # type: ignore[attr-defined]
-                it.from_remote   = from_remote # type: ignore[attr-defined]
+                it.worker_type          = wtype
+                it.yt_format_id         = format_id
+                it.yt_audio_only        = audio_only  # type: ignore[attr-defined]
+                it.from_remote          = from_remote # type: ignore[attr-defined]
+                it.playlist_group_id    = group_id
+                it.playlist_group_title = group_title
+                it.playlist_index       = group_index
+                it.playlist_total       = group_total
                 return (existing_idx, it, True)   # True = reuse
             else:
-                idx = self._next_idx
-                self._next_idx += 1
+                with self._items_lock:
+                    idx = self._next_idx
+                    self._next_idx += 1
                 it = DownloadItem(url=file_url, filename=name,
                                   dest_path=dest, relative_path=rel_dir)
-                it.worker_type   = wtype     
-                it.yt_format_id  = format_id 
-                it.yt_audio_only = audio_only
-                it.from_remote   = from_remote  # type: ignore[attr-defined]
-                self.items[idx]  = it
+                it.worker_type          = wtype
+                it.yt_format_id         = format_id
+                it.yt_audio_only        = audio_only
+                it.from_remote          = from_remote  # type: ignore[attr-defined]
+                it.playlist_group_id    = group_id
+                it.playlist_group_title = group_title
+                it.playlist_index       = group_index
+                it.playlist_total       = group_total
+                with self._items_lock:
+                    self.items[idx] = it
                 return (idx, it, False)          # False = new
 
         def init_ui_chunked(chunk: list, ready_ev: threading.Event,
@@ -2314,13 +2377,36 @@ class TurboDownloader(ctk.CTk):
                 if not self._settings.get("notifications", True):
                     return
                 def _notify_thread():
-                    done     = sum(1 for i in batch_set
-                                   if i in self.items and self.items[i].state == "done")
-                    errs     = sum(1 for i in batch_set
-                                   if i in self.items and self.items[i].state == "error")
-                    canceled = sum(1 for i in batch_set
-                                   if i in self.items and self.items[i].state in ("canceled", "skipped"))
-                    notify_batch_done(done, errs, canceled)
+                    # Group items by playlist — send one notif per playlist
+                    # and one global notif for non-playlist items
+                    groups_seen: set = set()
+                    standalone_done = standalone_errs = standalone_canceled = 0
+                    for i in batch_set:
+                        if i not in self.items:
+                            continue
+                        it2  = self.items[i]
+                        gid2 = getattr(it2, "playlist_group_id", None)
+                        if gid2:
+                            if gid2 not in groups_seen:
+                                groups_seen.add(gid2)
+                                members = [j for j in batch_set
+                                           if j in self.items
+                                           and getattr(self.items[j], "playlist_group_id", None) == gid2]
+                                p_done  = sum(1 for j in members if self.items[j].state == "done")
+                                p_errs  = sum(1 for j in members if self.items[j].state == "error")
+                                p_canc  = sum(1 for j in members if self.items[j].state in ("canceled","skipped"))
+                                title   = getattr(it2, "playlist_group_title", "") or "Playlist"
+                                from notifier import notify
+                                msg = f"{p_done} downloaded"
+                                if p_errs:   msg += f", {p_errs} errors"
+                                if p_canc:   msg += f", {p_canc} skipped"
+                                notify(f"Playlist done — {title[:40]}", msg)
+                        else:
+                            if it2.state == "done":     standalone_done += 1
+                            elif it2.state == "error":  standalone_errs += 1
+                            elif it2.state in ("canceled","skipped"): standalone_canceled += 1
+                    if standalone_done + standalone_errs + standalone_canceled > 0:
+                        notify_batch_done(standalone_done, standalone_errs, standalone_canceled)
                 threading.Thread(target=_notify_thread, daemon=True).start()
 
             def _on_future_done(f):

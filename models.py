@@ -61,3 +61,9 @@ class DownloadItem:
     yt_format_id:  Optional[str] = None   # format_id chosen in quality popup
     yt_audio_only: bool          = False  # audio-only extraction mode
     yt_retry:      bool          = False  # True on auto-retry with alternate client
+
+    # Playlist grouping
+    playlist_group_id:    Optional[str] = None
+    playlist_group_title: Optional[str] = None
+    playlist_index:       int           = 0
+    playlist_total:       int           = 0

@@ -19,7 +19,7 @@ import tempfile
 from logger import get_logger
 _log = get_logger("updater")
 
-APP_VERSION    = "2.7.2"
+APP_VERSION    = "2.7.3"
 GITHUB_REPO    = "Doryx-1/TurboDownloader"
 API_URL        = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 SETUP_FILENAME = "TurboDownloader_Setup.exe"
