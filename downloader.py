@@ -537,7 +537,7 @@ class TurboDownloader(ctk.CTk):
         title_frame.pack(fill="x", padx=16, pady=(20, 4))
         ctk.CTkLabel(title_frame, text="⬇  TurboDownloader",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(title_frame, text="v2.7.1", text_color="#555555",
+        ctk.CTkLabel(title_frame, text=f"v{_updater.APP_VERSION}", text_color="#555555",
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
 
         # Séparateur

@@ -35,6 +35,7 @@ desktop.ini
 # Fichiers de config locaux (si tu en ajoutes un jour)
 config.local.*
 settings.local.*
+bump_version.py
 
 # Autres
 *.spec

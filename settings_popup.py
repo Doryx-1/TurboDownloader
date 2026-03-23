@@ -501,7 +501,8 @@ class SettingsPopup(ctk.CTkToplevel):
         info = ctk.CTkFrame(p, fg_color="transparent")
         info.pack(fill="x", padx=20, pady=(0, 8))
         ctk.CTkLabel(info, text="Version:", width=130, anchor="w").pack(side="left")
-        ctk.CTkLabel(info, text="2.7.1", text_color="gray").pack(side="left")
+        import updater as _upd_ver
+        ctk.CTkLabel(info, text=_upd_ver.APP_VERSION, text_color="gray").pack(side="left")
 
         # Check for updates toggle + manual button
         row_upd = ctk.CTkFrame(p, fg_color="transparent")
