@@ -36,6 +36,7 @@ desktop.ini
 config.local.*
 settings.local.*
 bump_version.py
+CLAUDE.md
 
 # Autres
 *.spec
