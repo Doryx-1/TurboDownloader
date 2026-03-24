@@ -230,7 +230,7 @@ class DownloadEngineMixin:
 
                         with seg_lock:
                             it.downloaded += n
-                            it.speed_window.append((time.time(), n))
+                        it.speed_window.append((time.time(), n))
 
                         self._record_bytes(n)
                         self._throttle_chunk(n)

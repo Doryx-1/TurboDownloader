@@ -367,6 +367,16 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkCheckBox(row_notif, text="Enable notifications (requires plyer)",
                         variable=self._notif_var).pack(side="left")
 
+        # Clipboard monitor
+        row_clip = ctk.CTkFrame(p, fg_color="transparent")
+        row_clip.pack(fill="x", padx=20, pady=(0, 14))
+        self._clipboard_var = ctk.BooleanVar(
+            value=self._settings.get("clipboard_monitor", False))
+        ctk.CTkCheckBox(row_clip,
+                        text="Monitor clipboard for URLs  (auto-suggest when a file URL is copied)",
+                        variable=self._clipboard_var,
+                        command=self._on_clipboard_toggle).pack(side="left")
+
         ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 4))
 
         self._section(p, "File already exists",
@@ -525,6 +535,12 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(info2, text="~/.turbodownloader/",
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left")
 
+    def _on_clipboard_toggle(self):
+        self._settings["clipboard_monitor"] = self._clipboard_var.get()
+        save_settings(self._settings)
+        if hasattr(self.master, "_apply_clipboard_monitor"):
+            self.master._apply_clipboard_monitor()
+
     def _manual_check_update(self):
         """Triggers a manual update check — shows popup even if up to date."""
         import updater as _upd
@@ -586,9 +602,26 @@ class SettingsPopup(ctk.CTkToplevel):
         client_frame = ctk.CTkFrame(content, fg_color="#1e1e1e", corner_radius=8)
         client_frame.pack(fill="x", padx=20, pady=(0, 12))
 
+        # ── Saved profiles row ────────────────────────────────────────────────
+        rcp = ctk.CTkFrame(client_frame, fg_color="transparent")
+        rcp.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(rcp, text="Saved profiles:", width=130, anchor="w").pack(side="left")
+        self._profiles = list(self._settings.get("remote_profiles", []))
+        profile_names = [p["name"] for p in self._profiles] or ["(none)"]
+        self._rclient_profile_cb = ctk.CTkComboBox(
+            rcp, values=profile_names, width=180, state="readonly",
+            command=self._load_profile)
+        self._rclient_profile_cb.pack(side="left")
+        ctk.CTkButton(rcp, text="💾", width=32, height=28,
+                      command=self._save_profile,
+                      fg_color="#1a2a1a", hover_color="#2a3a2a").pack(side="left", padx=(4, 0))
+        ctk.CTkButton(rcp, text="🗑", width=32, height=28,
+                      command=self._delete_profile,
+                      fg_color="#2a1a1a", hover_color="#3a2a2a").pack(side="left", padx=(4, 0))
+
         # Host
         rc = ctk.CTkFrame(client_frame, fg_color="transparent")
-        rc.pack(fill="x", padx=14, pady=(10, 4))
+        rc.pack(fill="x", padx=14, pady=(4, 4))
         ctk.CTkLabel(rc, text="Host / IP:", width=130, anchor="w").pack(side="left")
         self._rclient_host_e = ctk.CTkEntry(rc, width=180,
                                             placeholder_text="192.168.1.x or hostname")
@@ -826,6 +859,63 @@ class SettingsPopup(ctk.CTkToplevel):
         else:
             self._remote_status_lbl.configure(
                 text="⚫ Not running", text_color="#888888")
+
+    def _profile_combo_values(self):
+        return [p["name"] for p in self._profiles] if self._profiles else ["(none)"]
+
+    def _load_profile(self, name):
+        """Fill host/port/user/pass fields from the selected profile."""
+        profile = next((p for p in self._profiles if p["name"] == name), None)
+        if not profile:
+            return
+        for entry in [self._rclient_host_e]:
+            entry.delete(0, "end")
+            entry.insert(0, profile.get("host", ""))
+        for entry in [self._rclient_port_e]:
+            entry.delete(0, "end")
+            entry.insert(0, str(profile.get("port", 9988)))
+        for entry in [self._rclient_user_e]:
+            entry.delete(0, "end")
+            entry.insert(0, profile.get("user", ""))
+        self._rclient_pass_e.delete(0, "end")
+        self._rclient_pass_e.insert(0, profile.get("password", ""))
+
+    def _save_profile(self):
+        """Save current fields as a new or existing profile."""
+        host = self._rclient_host_e.get().strip()
+        port = self._rclient_port_e.get().strip()
+        user = self._rclient_user_e.get().strip()
+        pwd  = self._rclient_pass_e.get()
+        if not host:
+            return
+        # Ask name via simple dialog
+        import tkinter.simpledialog as sd
+        name = sd.askstring("Save profile", "Profile name:", parent=self)
+        if not name:
+            return
+        name = name.strip()
+        # Update or add
+        existing = next((p for p in self._profiles if p["name"] == name), None)
+        entry = {"name": name, "host": host, "port": int(port or 9988),
+                 "user": user, "password": pwd}
+        if existing:
+            self._profiles[self._profiles.index(existing)] = entry
+        else:
+            self._profiles.append(entry)
+        self._settings["remote_profiles"] = self._profiles
+        save_settings(self._settings)
+        self._rclient_profile_cb.configure(values=self._profile_combo_values())
+        self._rclient_profile_cb.set(name)
+
+    def _delete_profile(self):
+        """Delete the currently selected profile."""
+        name = self._rclient_profile_cb.get()
+        self._profiles = [p for p in self._profiles if p["name"] != name]
+        self._settings["remote_profiles"] = self._profiles
+        save_settings(self._settings)
+        vals = self._profile_combo_values()
+        self._rclient_profile_cb.configure(values=vals)
+        self._rclient_profile_cb.set(vals[0])
 
     def _refresh_client_badge(self):
         """Updates the client connection status badge."""
@@ -1109,6 +1199,8 @@ class SettingsPopup(ctk.CTkToplevel):
 
         # Notifications
         self._settings["notifications"] = self._notif_var.get()
+        if getattr(self, "_clipboard_var", None):
+            self._settings["clipboard_monitor"] = self._clipboard_var.get()
         if getattr(self, "_file_exists_var", None):
             self._settings["file_exists_action"] = self._file_exists_var.get()
         if getattr(self, "_check_updates_var", None):

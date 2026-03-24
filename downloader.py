@@ -133,6 +133,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.after(80, self._process_ui_queue)
         self.after(1000, self._tick_global_speed)
 
+        # Clipboard monitor
+        self._clipboard_last_hash = None
+        self._clipboard_banner    = None
+        self._clipboard_thread    = None
+        self._apply_clipboard_monitor()
+
     @property
     def _active_extensions(self) -> tuple:
         """Retourne les extensions activées in les settings (tuple pour endswith)."""
@@ -205,6 +211,99 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 self._on_start(),
             ),
         )
+
+    # ─────────────────────────────────────────── Clipboard monitor
+
+    def _apply_clipboard_monitor(self):
+        """Start or stop the clipboard polling thread based on settings."""
+        enabled = self._settings.get("clipboard_monitor", False)
+        running = (self._clipboard_thread is not None
+                   and self._clipboard_thread.is_alive())
+        if enabled and not running:
+            self._clipboard_stop = threading.Event()
+            self._clipboard_thread = threading.Thread(
+                target=self._clipboard_poll_loop, daemon=True, name="ClipboardMonitor")
+            self._clipboard_thread.start()
+        elif not enabled and running:
+            self._clipboard_stop.set()
+            self._clipboard_thread = None
+
+    def _clipboard_poll_loop(self):
+        import hashlib
+        import re
+        FILE_RE = re.compile(
+            r'https?://\S+\.(' + '|'.join(
+                e.lstrip('.') for e in self._active_extensions
+            ) + r')(\?[^\s]*)?$', re.IGNORECASE)
+
+        while not self._clipboard_stop.is_set():
+            self._clipboard_stop.wait(1.5)
+            if self._clipboard_stop.is_set():
+                break
+            try:
+                text = self.clipboard_get().strip()
+            except Exception:
+                continue
+            h = hashlib.md5(text.encode()).hexdigest()
+            if h == self._clipboard_last_hash:
+                continue
+            self._clipboard_last_hash = h
+            if not FILE_RE.match(text):
+                continue
+            # Don't suggest if the URL is already in the input box
+            try:
+                current = self.url_box.get("1.0", "end").strip()
+                if text in current:
+                    continue
+            except Exception:
+                pass
+            self.ui(self._show_clipboard_banner, text)
+
+    def _show_clipboard_banner(self, url: str):
+        """Show a non-blocking banner suggesting to add clipboard URL."""
+        if self._clipboard_banner is not None:
+            try:
+                self._clipboard_banner.destroy()
+            except Exception:
+                pass
+        banner = ctk.CTkFrame(self._scroll_container, fg_color="#1a2a3a",
+                              corner_radius=6, border_width=1, border_color="#2a5a8a")
+        banner.place(relx=0.5, rely=0.0, anchor="n", relwidth=0.96, y=6)
+        self._clipboard_banner = banner
+
+        inner = ctk.CTkFrame(banner, fg_color="transparent")
+        inner.pack(fill="x", padx=10, pady=6)
+        ctk.CTkLabel(inner, text="📋 Clipboard URL detected:",
+                     font=ctk.CTkFont(size=11), text_color="#7ab4d4").pack(side="left")
+        ctk.CTkLabel(inner, text=url[:60] + ("…" if len(url) > 60 else ""),
+                     font=ctk.CTkFont(size=10), text_color="#aaaaaa").pack(side="left", padx=(6, 0))
+        ctk.CTkButton(inner, text="Add to queue", width=110, height=24,
+                      fg_color="#1f6aa5", hover_color="#1a5a8f",
+                      font=ctk.CTkFont(size=11),
+                      command=lambda: self._clipboard_add(url)).pack(side="right")
+        ctk.CTkButton(inner, text="✕", width=24, height=24,
+                      fg_color="transparent", hover_color="#3a3a3a",
+                      command=self._dismiss_clipboard_banner).pack(side="right", padx=(0, 4))
+        # Auto-dismiss after 5 seconds
+        self.after(5000, self._dismiss_clipboard_banner)
+
+    def _dismiss_clipboard_banner(self):
+        if self._clipboard_banner is not None:
+            try:
+                self._clipboard_banner.destroy()
+            except Exception:
+                pass
+            self._clipboard_banner = None
+
+    def _clipboard_add(self, url: str):
+        """Add clipboard URL to the input box and dismiss the banner."""
+        self._dismiss_clipboard_banner()
+        try:
+            current = self.url_box.get("1.0", "end").strip()
+            self.url_box.delete("1.0", "end")
+            self.url_box.insert("1.0", (current + "\n" + url).strip())
+        except Exception:
+            pass
 
     def _check_for_updates_startup(self):
         """Checks for updates silently at startup — popup only if newer version found."""
@@ -297,6 +396,13 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             fg_color="#1f6aa5", hover_color="#1a5a8f",
             command=self.start_downloads)
         self.start_btn.pack(fill="x", padx=16, pady=(0, 6))
+
+        self.pause_all_btn = ctk.CTkButton(
+            sidebar, text="⏸  Pause all", height=34,
+            fg_color="#1a1a2e", hover_color="#2a2a4e",
+            border_width=1, border_color="#4a4a8a",
+            command=self._toggle_pause_all)
+        self.pause_all_btn.pack(fill="x", padx=16, pady=(0, 6))
 
         self.stop_btn = ctk.CTkButton(
             sidebar, text="⏹  Stop all", height=34,
@@ -608,6 +714,8 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             self._settings.update(load_settings())
             # Apply remote server changes (start/stop as needed)
             self._apply_remote_settings()
+            # Apply clipboard monitor toggle
+            self._apply_clipboard_monitor()
         SettingsPopup(self, self._settings, on_save)
 
     def _open_history(self):
@@ -797,8 +905,10 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         # Empty state : visible seulement si aucun item
         if total == 0:
             self._empty_frame.lift()
+            self.scroll.lower()
         else:
             self._empty_frame.lower()
+            self.scroll.lift()
 
     # ----------------------------------------------------------------- Orchestration START / STOP
 
@@ -1289,6 +1399,19 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
 
         new_indices = []
         threading.Thread(target=_run, daemon=True).start()
+
+    def _toggle_pause_all(self):
+        """Pause all downloading items, or resume all paused items."""
+        downloading = [idx for idx, it in self.items.items() if it.state == "downloading"]
+        paused      = [idx for idx, it in self.items.items() if it.state == "paused"]
+        if downloading:
+            for idx in downloading:
+                self.pause_one(idx)
+            self.pause_all_btn.configure(text="▶  Resume all")
+        elif paused:
+            for idx in paused:
+                self.pause_one(idx)
+            self.pause_all_btn.configure(text="⏸  Pause all")
 
     def stop_all(self):
         self.stop_all_event.set()

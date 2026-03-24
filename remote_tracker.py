@@ -162,6 +162,9 @@ class RemoteTrackerMixin:
 
                     downloads = data.get("downloads", [])
 
+                    # Collect all row updates, apply in a single UI call
+                    pending_updates = []
+
                     for dl in downloads:
                         server_idx = dl.get("idx")
                         state      = dl.get("state", "")
@@ -204,7 +207,6 @@ class RemoteTrackerMixin:
                             server_to_shadow.pop(server_idx, None)
                             continue
 
-                        row = shadow["row"]
                         shadow["state"]      = state
                         shadow["server_idx"] = server_idx
 
@@ -221,35 +223,37 @@ class RemoteTrackerMixin:
                         is_final  = state in ("done", "error", "canceled")
                         is_paused = state == "paused"
 
-                        def _update(r=row, l=lbl, c=color, p=pct,
-                                    sp=speed, fn=fname, final=is_final,
-                                    paused=is_paused, si=shadow_idx,
-                                    srv=server_idx):
-                            if si not in self._shadow_rows:
-                                return
-                            if fn:
-                                r.name_lbl.configure(text=f"📡 {fn}")
-                            r.status.configure(text=l, text_color=c)
-                            r.progress.set(p)
-                            if sp > 0:
-                                spd = (f"{sp} B/s" if sp < 1024
-                                       else f"{sp/1024:.1f} KB/s" if sp < 1024**2
-                                       else f"{sp/1024**2:.2f} MB/s")
-                                r.speed_lbl.configure(text=f"Remote · {spd}")
-                            # Buttons — active once server_idx is known
-                            can_control = srv is not None and not final
-                            r.pause_btn.configure(
-                                text="▶" if paused else "⏸",
-                                state="normal" if can_control else "disabled")
-                            r.cancel_btn.configure(
-                                state="normal" if can_control else "disabled")
-                            r.remove_btn.configure(
-                                state="normal" if final else "disabled")
-                            self._sort_shadow_rows()
-
-                        self.ui(_update)
+                        pending_updates.append((
+                            shadow["row"], lbl, color, pct, speed, fname,
+                            is_final, is_paused, shadow_idx, server_idx
+                        ))
                         if is_final:
                             server_to_shadow.pop(server_idx, None)
+
+                    if pending_updates:
+                        def _batch_update(updates=pending_updates):
+                            for (r, l, c, p, sp, fn, final, paused, si, srv) in updates:
+                                if si not in self._shadow_rows:
+                                    continue
+                                if fn:
+                                    r.name_lbl.configure(text=f"📡 {fn}")
+                                r.status.configure(text=l, text_color=c)
+                                r.progress.set(p)
+                                if sp > 0:
+                                    spd = (f"{sp} B/s" if sp < 1024
+                                           else f"{sp/1024:.1f} KB/s" if sp < 1024**2
+                                           else f"{sp/1024**2:.2f} MB/s")
+                                    r.speed_lbl.configure(text=f"Remote · {spd}")
+                                can_control = srv is not None and not final
+                                r.pause_btn.configure(
+                                    text="▶" if paused else "⏸",
+                                    state="normal" if can_control else "disabled")
+                                r.cancel_btn.configure(
+                                    state="normal" if can_control else "disabled")
+                                r.remove_btn.configure(
+                                    state="normal" if final else "disabled")
+                            self._sort_shadow_rows()
+                        self.ui(_batch_update)
 
                 except Exception as e:
                     _log.debug("DL tracker error: %s", e)
