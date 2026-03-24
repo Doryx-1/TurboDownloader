@@ -905,9 +905,25 @@ class SettingsPopup(ctk.CTkToplevel):
                 self.master.ui(self.master._update_remote_status_bar)
                 print("[remote-client] Heartbeat: reconnected")
 
+            def _on_version_mismatch(server_ver):
+                from updater import APP_VERSION
+                def _show():
+                    self.master._remote_client = None
+                    self.master._update_remote_status_bar()
+                    if self.winfo_exists():
+                        self._rclient_status_lbl.configure(
+                            text=f"✗ Version incompatible — serveur v{server_ver}",
+                            text_color="#cc4444")
+                        self._show_version_mismatch_popup(
+                            host=host, port=port, user=user, pwd=pwd,
+                            server_ver=server_ver, client_ver=APP_VERSION,
+                            client=c)
+                self.master.ui(_show)
+
             c.start_heartbeat(
                 on_disconnect=_on_disconnect,
                 on_reconnect=_on_reconnect,
+                on_version_mismatch=_on_version_mismatch,
                 interval=15,
                 max_retries=0,   # infinite retries
             )
@@ -934,6 +950,9 @@ class SettingsPopup(ctk.CTkToplevel):
     def _show_version_mismatch_popup(self, host, port, user, pwd,
                                       server_ver, client_ver, client):
         """Shows a blocking popup when client and server versions differ."""
+        from updater import _parse_version
+        server_is_older = _parse_version(server_ver) < _parse_version(client_ver)
+
         popup = ctk.CTkToplevel(self)
         popup.title("Version incompatible")
         popup.geometry("440x220")
@@ -953,10 +972,16 @@ class SettingsPopup(ctk.CTkToplevel):
 
         def _update_server():
             popup.destroy()
-            ok = client.trigger_remote_update(username=user, password=pwd)
-            if ok:
+            status = client.trigger_remote_update(username=user, password=pwd)
+            if status == "update_started":
                 self._rclient_status_lbl.configure(
-                    text="⏳ Mise à jour envoyée au serveur…", text_color="#f0a500")
+                    text="⏳ Mise à jour lancée sur le serveur…", text_color="#f0a500")
+            elif status == "already_up_to_date":
+                self._rclient_status_lbl.configure(
+                    text="ℹ Serveur déjà à la dernière version", text_color="#888888")
+            elif status == "check_failed":
+                self._rclient_status_lbl.configure(
+                    text="✗ Le serveur n'a pas pu joindre GitHub", text_color="#cc4444")
             else:
                 self._rclient_status_lbl.configure(
                     text="✗ Impossible de déclencher la MAJ serveur", text_color="#cc4444")
@@ -966,14 +991,19 @@ class SettingsPopup(ctk.CTkToplevel):
             import updater as _upd
             _upd.check_for_updates(self.master, silent=False)
 
-        ctk.CTkButton(btn_frame, text="⬆ Mettre à jour le serveur",
-                      fg_color="#1f6aa5", hover_color="#1a5a8f",
-                      font=ctk.CTkFont(size=12),
-                      command=_update_server).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(btn_frame, text="⬆ Mettre à jour ce client",
-                      fg_color="#2a6a2a", hover_color="#1a5a1a",
-                      font=ctk.CTkFont(size=12),
-                      command=_update_client).pack(side="left", padx=(0, 8))
+        if server_is_older:
+            # Client is newer → only the server needs updating
+            ctk.CTkButton(btn_frame, text="⬆ Mettre à jour le serveur",
+                          fg_color="#1f6aa5", hover_color="#1a5a8f",
+                          font=ctk.CTkFont(size=12),
+                          command=_update_server).pack(side="left", padx=(0, 8))
+        else:
+            # Server is newer → only the client needs updating
+            ctk.CTkButton(btn_frame, text="⬆ Mettre à jour ce client",
+                          fg_color="#2a6a2a", hover_color="#1a5a1a",
+                          font=ctk.CTkFont(size=12),
+                          command=_update_client).pack(side="left", padx=(0, 8))
+
         ctk.CTkButton(btn_frame, text="Annuler",
                       fg_color="transparent", border_width=1, border_color="#444",
                       command=popup.destroy).pack(side="right")

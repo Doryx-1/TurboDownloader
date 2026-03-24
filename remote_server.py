@@ -556,16 +556,21 @@ class RemoteServer:
             if not auth_ok:
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
+            from updater import fetch_latest_release, APP_VERSION, _is_newer
+            release = fetch_latest_release()
+            if not release:
+                return {"status": "check_failed"}
+            if not _is_newer(release["tag"], APP_VERSION):
+                return {"status": "already_up_to_date"}
+            url = release.get("download_url")
+            if not url:
+                return {"status": "no_download_url"}
+
             def _do_update():
-                from updater import (fetch_latest_release, APP_VERSION,
-                                     _is_newer, _launch_download_and_install_silent)
-                release = fetch_latest_release()
-                if release and _is_newer(release["tag"], APP_VERSION):
-                    url = release.get("download_url")
-                    if url:
-                        _launch_download_and_install_silent(app_ref, url)
+                from updater import _launch_download_and_install_silent
+                _launch_download_and_install_silent(app_ref, url)
             _th.Thread(target=_do_update, daemon=True, name="RemoteUpdate").start()
-            return {"status": "update_check_started"}
+            return {"status": "update_started"}
 
         @api.get("/status")
         def get_status(_ = Depends(require_auth)):
@@ -906,12 +911,14 @@ class RemoteClient:
             return False, f"Connection error: {e}"
 
     def start_heartbeat(self, on_disconnect=None, on_reconnect=None,
+                        on_version_mismatch=None,
                         interval: int = 10, max_retries: int = 5):
         """
         Starts a background thread that pings the server every `interval` seconds.
-        - on_disconnect() : called when connection is lost
-        - on_reconnect()  : called when connection is restored
-        - max_retries     : number of reconnect attempts before giving up (0 = infinite)
+        - on_disconnect()              : called when connection is lost
+        - on_reconnect()               : called when connection is restored
+        - on_version_mismatch(ver)     : called (and retries stopped) on VERSION_MISMATCH
+        - max_retries                  : number of reconnect attempts before giving up (0 = infinite)
         """
         import threading as _th
         import time as _t
@@ -954,6 +961,13 @@ class RemoteClient:
                             retries = 0
                             if on_reconnect:
                                 on_reconnect()
+                        elif msg.startswith("VERSION_MISMATCH:"):
+                            server_ver = msg.split(":", 1)[1]
+                            _log.warning("Heartbeat: version mismatch with server v%s — stopping retries", server_ver)
+                            self._alive = False
+                            if on_version_mismatch:
+                                on_version_mismatch(server_ver)
+                            break
                         else:
                             _log.warning("Reconnect failed: %s", msg)
 
@@ -1024,14 +1038,19 @@ class RemoteClient:
             pass
         return None
 
-    def trigger_remote_update(self, username: str = "", password: str = "") -> bool:
+    def trigger_remote_update(self, username: str = "", password: str = "") -> str:
         """
         Asks the server to download and silently install the latest update.
         Passes credentials as query params for cases where no token is available yet.
-        Returns True if the server accepted the request.
+        Returns the server status string:
+          "update_started"    — update download launched
+          "already_up_to_date" — server is already on the latest release
+          "check_failed"      — server could not reach GitHub
+          "no_download_url"   — release found but no installer asset
+          "error"             — network/auth error
         """
         if not self._httpx:
-            return False
+            return "error"
         try:
             params = {}
             if not self._ok and username and password:
@@ -1040,12 +1059,14 @@ class RemoteClient:
             r = self._httpx.post(
                 f"{self._base}/admin/trigger-update",
                 headers=headers, params=params,
-                verify=False, timeout=10,
+                verify=False, timeout=15,
             )
-            return r.status_code == 200
+            if r.status_code == 200:
+                return r.json().get("status", "error")
+            return "error"
         except Exception as e:
             _log.warning("trigger_remote_update failed: %s", e)
-            return False
+            return "error"
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

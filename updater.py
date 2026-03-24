@@ -27,16 +27,29 @@ SETUP_FILENAME = "TurboDownloader_Setup.exe"
 
 
 def _parse_version(tag: str) -> tuple:
-    """Converts 'v2.7.0' or '2.7.0' to (2, 7, 0)."""
+    """Converts 'v2.7.0', '2.7.0', or '2.7.4-rc1' to (2, 7, 0) / (2, 7, 4).
+    Only the leading numeric part of each segment is kept (e.g. '4-rc1' → 4),
+    so pre-release suffixes never cause a parse failure.
+    """
     tag = tag.lstrip("v").strip()
-    try:
-        return tuple(int(x) for x in tag.split("."))
-    except Exception:
-        return (0,)
+    parts = []
+    for segment in tag.split("."):
+        numeric = ""
+        for ch in segment:
+            if ch.isdigit():
+                numeric += ch
+            else:
+                break
+        if numeric:
+            parts.append(int(numeric))
+    return tuple(parts) if parts else (0,)
 
 
 def _is_newer(remote: str, current: str) -> bool:
-    """Returns True if remote version is strictly newer than current."""
+    """Returns True if remote version is strictly newer than current.
+    A remote version that is equal to or older than current is never considered newer,
+    preventing accidental downgrades.
+    """
     return _parse_version(remote) > _parse_version(current)
 
 
@@ -97,6 +110,13 @@ def check_for_updates(app, current_version: str = APP_VERSION, silent: bool = Fa
 
 def _show_update_popup(app, release: dict, current_version: str):
     """Shows the update available popup on the UI thread."""
+    # Hard downgrade guard — should never happen, but double-check before showing UI
+    if not _is_newer(release.get("tag", ""), current_version):
+        _log.warning(
+            "Downgrade blocked: remote %s is not newer than current %s",
+            release.get("tag"), current_version)
+        return
+
     import customtkinter as ctk
 
     popup = ctk.CTkToplevel(app)
