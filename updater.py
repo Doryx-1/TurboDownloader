@@ -13,13 +13,14 @@ Usage (from downloader.py):
 import threading
 import os
 import sys
+import subprocess
 import pathlib
 import tempfile
 
 from logger import get_logger
 _log = get_logger("updater")
 
-APP_VERSION    = "2.7.3"
+APP_VERSION    = "2.7.4"
 GITHUB_REPO    = "Doryx-1/TurboDownloader"
 API_URL        = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 SETUP_FILENAME = "TurboDownloader_Setup.exe"
@@ -243,6 +244,39 @@ def _launch_download_and_install(app, url: str, tag: str):
                 text=f"Download failed: {e}", text_color="#cc4444"))
 
     threading.Thread(target=_do_download, daemon=True, name="UpdateDownload").start()
+
+
+def _launch_download_and_install_silent(app, url: str):
+    """
+    Downloads the setup exe and installs it silently (no UI).
+    Used when a remote update is triggered via the API.
+    """
+    def _do():
+        try:
+            import urllib.request
+            dest = pathlib.Path(tempfile.gettempdir()) / SETUP_FILENAME
+            urllib.request.urlretrieve(url, str(dest))
+            _log.info("Silent update downloaded to %s", dest)
+            app.after(0, lambda: _install_silent(dest, app))
+        except Exception as e:
+            _log.error("Silent update download failed: %s", e)
+    threading.Thread(target=_do, daemon=True, name="SilentUpdateDownload").start()
+
+
+def _install_silent(setup_path: pathlib.Path, app):
+    """Launches the installer with /VERYSILENT flags and quits the app."""
+    try:
+        import subprocess
+        DETACHED  = 0x00000008
+        NEW_GROUP = 0x00000200
+        subprocess.Popen(
+            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            creationflags=DETACHED | NEW_GROUP,
+            close_fds=True,
+        )
+        app.after(1000, app._tray_quit)
+    except Exception as e:
+        _log.error("Silent install launch failed: %s", e)
 
 
 def _install(setup_path: pathlib.Path, popup, app):

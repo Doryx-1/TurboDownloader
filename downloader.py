@@ -13,7 +13,8 @@ _log = get_logger("downloader")
 import requests
 from bs4 import BeautifulSoup
 import customtkinter as ctk
-from tkinter import filedialog
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
 import shutil
 
@@ -964,6 +965,7 @@ class TurboDownloader(ctk.CTk):
             on_cancel=lambda i=idx:   self.cancel_one(i),
             on_remove=lambda i=idx:   self.remove_one(i),
             on_priority=lambda i=idx: self.priority_one(i),
+            on_context_menu=self._make_context_menu(idx),
         )
         if item.from_remote:
             row.frame.configure(border_color="#1a3a5a")
@@ -1193,6 +1195,74 @@ class TurboDownloader(ctk.CTk):
             it = self.items.get(idx)
             if it and it.state in ("done", "error", "canceled", "skipped"):
                 self.remove_one(idx)
+
+    # ----------------------------------------------------------------- Context menu
+
+    def _make_context_menu(self, idx: int):
+        """Returns a <Button-3> handler that shows a right-click context menu for download row idx."""
+        def handler(event):
+            item = self.items.get(idx)
+            if not item:
+                return
+            menu = tk.Menu(self, tearoff=0, bg="#2a2a2a", fg="#dddddd",
+                           activebackground="#1f6aa5", activeforeground="#ffffff",
+                           relief="flat", bd=0)
+
+            # ── Ouvrir le dossier (local uniquement) ─────────────────────────
+            dest_dir = os.path.dirname(item.dest_path)
+            is_local = not getattr(item, "from_remote", False)
+            if is_local and os.path.isdir(dest_dir):
+                menu.add_command(
+                    label="📂  Ouvrir le dossier",
+                    command=lambda: os.startfile(dest_dir))
+            else:
+                menu.add_command(label="📂  Ouvrir le dossier", state="disabled")
+
+            # ── Supprimer le fichier (done uniquement) ────────────────────────
+            if item.state == "done" and is_local and os.path.isfile(item.dest_path):
+                menu.add_command(
+                    label="🗑  Supprimer le fichier",
+                    command=lambda i=idx: self._delete_downloaded_file(i))
+            else:
+                menu.add_command(label="🗑  Supprimer le fichier", state="disabled")
+
+            menu.add_separator()
+
+            # ── Effacer la ligne ──────────────────────────────────────────────
+            if item.state in ("done", "error", "canceled", "skipped"):
+                menu.add_command(
+                    label="✕  Effacer la ligne",
+                    command=lambda i=idx: self.remove_one(i))
+            else:
+                menu.add_command(label="✕  Effacer la ligne", state="disabled")
+
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        return handler
+
+    def _delete_downloaded_file(self, idx: int):
+        """Deletes the downloaded file from disk after user confirmation."""
+        item = self.items.get(idx)
+        if not item or item.state != "done":
+            return
+        path = item.dest_path
+        if not os.path.isfile(path):
+            return
+        name = os.path.basename(path)
+        if not messagebox.askyesno(
+            "Supprimer le fichier",
+            f"Supprimer définitivement :\n{name}\n\nCette action est irréversible.",
+            icon="warning", parent=self
+        ):
+            return
+        try:
+            os.remove(path)
+            _log.info("Deleted file: %s", path)
+        except OSError as e:
+            messagebox.showerror("Erreur", f"Impossible de supprimer le fichier :\n{e}", parent=self)
 
     # ----------------------------------------------------------------- Formatting
 
@@ -2298,12 +2368,20 @@ class TurboDownloader(ctk.CTk):
                     popup_done.set()
 
             self.ui(open_popup)
-            popup_done.wait()
-
+            if not popup_done.wait(timeout=300):   # 5 min safety net
+                _log.warning("popup_done timed out — restoring start button")
             self.ui(lambda: (self.start_btn.configure(state="normal", text="▶  Start"),
                              self.title("TurboDownloader")))
 
-        threading.Thread(target=process_all_urls, daemon=True).start()
+        def _safe_process_all_urls():
+            try:
+                process_all_urls()
+            except Exception:
+                _log.exception("Unexpected error in process_all_urls")
+                self.ui(lambda: (self.start_btn.configure(state="normal", text="▶  Start"),
+                                 self.title("TurboDownloader")))
+
+        threading.Thread(target=_safe_process_all_urls, daemon=True).start()
 
     def _probe_url(self, url: str) -> str:
         """Probes a URL to determine its nature.

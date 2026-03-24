@@ -16,7 +16,8 @@ _STATE_STYLE = {
 class DownloadRow:
     """Widget representing a single download row in the main list."""
 
-    def __init__(self, parent, name: str, on_pause, on_cancel, on_remove, on_priority=None):
+    def __init__(self, parent, name: str, on_pause, on_cancel, on_remove,
+                 on_priority=None, on_context_menu=None):
         self.frame = ctk.CTkFrame(parent, fg_color="#1e1e1e",
                                   corner_radius=8, border_width=1,
                                   border_color="#2a2a2a")
@@ -86,6 +87,11 @@ class DownloadRow:
         self.eta_lbl.grid(row=2, column=1, padx=4, pady=(0, 8), sticky="w")
 
         self.frame.grid_columnconfigure(0, weight=1)
+
+        if on_context_menu:
+            for w in (self.frame, self.name_lbl, self.progress,
+                      self.speed_lbl, self.eta_lbl, self.status):
+                w.bind("<Button-3>", on_context_menu)
 
     def update_state_style(self, state: str):
         """Met à jour la couleur du status selon l'état."""

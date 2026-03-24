@@ -8,83 +8,101 @@
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px; background: #1a1a1a; color: #dddddd;
-      padding: 32px; max-width: 520px; margin: 0 auto;
+      padding: 28px 32px 24px; max-width: 520px; margin: 0 auto;
+      min-height: 100vh; display: flex; flex-direction: column;
     }
-    h1 { font-size: 20px; font-weight: 600; color: #eee; margin-bottom: 6px; }
-    .subtitle { color: #666; font-size: 12px; margin-bottom: 28px; }
-    .section { margin-bottom: 28px; }
+    h1 { font-size: 20px; font-weight: 600; color: #eee; margin-bottom: 4px; }
+    .subtitle { color: #555; font-size: 12px; margin-bottom: 24px; }
+    .section { margin-bottom: 24px; }
     .section-title {
-      font-size: 12px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.08em; color: #888; margin-bottom: 12px;
-      padding-bottom: 6px; border-bottom: 1px solid #2a2a2a;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #666; margin-bottom: 12px;
+      padding-bottom: 6px; border-bottom: 1px solid #252525;
     }
+    /* ── Connection status ── */
     .status-box {
       display: flex; align-items: center; gap: 12px;
-      background: #222; border-radius: 8px; padding: 14px 16px;
-      margin-bottom: 14px;
+      background: #212121; border: 1px solid #2a2a2a;
+      border-radius: 8px; padding: 12px 14px; margin-bottom: 10px;
     }
-    .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-    .status-dot.ok  { background: #2e8b57; }
-    .status-dot.err { background: #8B0000; }
-    .status-dot.checking { background: #888; animation: pulse 1s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .status-dot.ok       { background: #2e8b57; }
+    .status-dot.err      { background: #8B0000; }
+    .status-dot.checking { background: #666; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
     .status-text { flex: 1; font-size: 13px; }
-    .status-text small { display: block; color: #666; font-size: 11px; margin-top: 2px; }
+    .status-text small { display: block; color: #555; font-size: 11px; margin-top: 1px; }
+    /* ── Fields ── */
     .field { margin-bottom: 14px; }
-    label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
+    label { display: block; font-size: 12px; color: #888; margin-bottom: 5px; }
     input[type="text"] {
-      width: 100%; background: #2a2a2a; border: 1px solid #333;
+      width: 100%; background: #242424; border: 1px solid #303030;
       border-radius: 6px; color: #ddd; font-size: 13px; padding: 8px 12px;
-      outline: none; transition: border-color 0.2s;
+      outline: none; transition: border-color 0.15s;
     }
     input:focus { border-color: #1f6aa5; }
-    .btn {
-      border: none; border-radius: 6px; cursor: pointer;
-      font-size: 13px; font-weight: 600; padding: 9px 18px; transition: background 0.2s;
-    }
-    .btn-primary { background: #1f6aa5; color: #fff; }
-    .btn-primary:hover { background: #1a5a8f; }
-    .btn-secondary { background: transparent; color: #888; border: 1px solid #333; }
-    .btn-secondary:hover { background: #2a2a2a; color: #ddd; }
-    .actions { display: flex; gap: 10px; margin-top: 20px; }
-    .feedback {
-      margin-top: 12px; padding: 10px 14px; border-radius: 6px;
-      font-size: 12px; display: none;
-    }
-    .feedback.success { background:#0d1f0d; color:#7aaa7a; border:1px solid #1a3a1a; display:block; }
-    .feedback.error   { background:#1f0d0d; color:#aa7a7a; border:1px solid #3a1a1a; display:block; }
-    .ext-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .ext-tag {
-      background: #2a2a2a; border: 1px solid #333; border-radius: 4px;
-      padding: 3px 10px; font-size: 12px; cursor: pointer;
-      transition: all 0.15s; user-select: none;
-    }
-    .ext-tag.active { background: #0d1a2a; border-color: #1f6aa5; color: #7ab8e8; }
+    /* ── Toggle rows ── */
     .toggle-row {
       display: flex; align-items: center; justify-content: space-between;
       padding: 10px 0; border-bottom: 1px solid #222;
     }
     .toggle-row:last-child { border-bottom: none; }
-    .toggle-desc { font-size: 12px; color: #aaa; margin-top: 2px; }
-    .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .toggle-label { font-size: 13px; }
+    .toggle-desc { font-size: 11px; color: #666; margin-top: 2px; }
+    .toggle { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }
     .toggle input { opacity: 0; width: 0; height: 0; }
     .slider {
-      position: absolute; inset: 0; background: #444;
+      position: absolute; inset: 0; background: #383838;
       border-radius: 20px; cursor: pointer; transition: background 0.2s;
     }
     .slider::before {
       content: ""; position: absolute; width: 14px; height: 14px;
-      left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform 0.2s;
+      left: 3px; top: 3px; background: #fff; border-radius: 50%;
+      transition: transform 0.2s;
     }
     .toggle input:checked + .slider { background: #1f6aa5; }
     .toggle input:checked + .slider::before { transform: translateX(16px); }
+    /* ── Extension tags ── */
+    .ext-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .ext-tag {
+      background: #242424; border: 1px solid #303030; border-radius: 4px;
+      padding: 3px 10px; font-size: 12px; cursor: pointer;
+      transition: all 0.12s; user-select: none; color: #aaa;
+    }
+    .ext-tag:hover  { border-color: #444; color: #ddd; }
+    .ext-tag.active { background: #0d1a2a; border-color: #1f6aa5; color: #7ab8e8; }
+    /* ── Buttons ── */
+    .btn {
+      border: none; border-radius: 6px; cursor: pointer;
+      font-size: 13px; font-weight: 600; padding: 9px 20px;
+      transition: background 0.15s;
+    }
+    .btn-primary   { background: #1f6aa5; color: #fff; }
+    .btn-primary:hover { background: #1a5a8f; }
+    .btn-secondary { background: transparent; color: #777; border: 1px solid #303030; }
+    .btn-secondary:hover { background: #252525; color: #ccc; }
+    /* ── Actions bar (pinned to bottom) ── */
+    .spacer  { flex: 1; }
+    .actions-bar {
+      display: flex; gap: 10px; align-items: center;
+      padding-top: 16px; border-top: 1px solid #252525;
+      margin-top: 8px;
+    }
+    /* ── Feedback ── */
+    .feedback {
+      margin-top: 10px; padding: 9px 14px; border-radius: 6px;
+      font-size: 12px; display: none;
+    }
+    .feedback.success { background:#0d1f0d; color:#7aaa7a; border:1px solid #1a3a1a; display:block; }
+    .feedback.error   { background:#1f0d0d; color:#aa7a7a; border:1px solid #3a1a1a; display:block; }
   </style>
 </head>
 <body>
-  <h1>⬇ TurboDownloader</h1>
-  <p class="subtitle">Extension settings</p>
 
-  <!-- ── Status ── -->
+  <h1>⬇ TurboDownloader</h1>
+  <p class="subtitle">Extension settings — v2.7.4</p>
+
+  <!-- ── Connection ── -->
   <div class="section">
     <div class="section-title">Connection</div>
     <div class="status-box">
@@ -93,16 +111,17 @@
         <span id="status-text">Checking…</span>
         <small id="status-sub">Connecting to TurboDownloader on this machine</small>
       </div>
+      <button class="btn btn-secondary" id="test-btn" style="padding:6px 14px;font-size:12px">Test</button>
     </div>
+  </div>
+
+  <!-- ── Preferences ── -->
+  <div class="section">
+    <div class="section-title">Preferences</div>
     <div class="field">
-      <label>Default destination (path on server, leave blank for TD default)</label>
+      <label>Default destination folder (path on the TD machine, leave blank for TD default)</label>
       <input type="text" id="dest" placeholder="e.g. D:\Medias\Downloads">
     </div>
-    <div class="actions">
-      <button class="btn btn-secondary" id="test-btn">Test connection</button>
-      <button class="btn btn-primary"   id="save-btn">Save</button>
-    </div>
-    <div class="feedback" id="feedback"></div>
   </div>
 
   <!-- ── Interception ── -->
@@ -110,7 +129,7 @@
     <div class="section-title">Download interception</div>
     <div class="toggle-row">
       <div>
-        <div>Auto-intercept downloads</div>
+        <div class="toggle-label">Auto-intercept downloads</div>
         <div class="toggle-desc">Automatically redirect matching downloads to TurboDownloader</div>
       </div>
       <label class="toggle">
@@ -120,10 +139,19 @@
     </div>
   </div>
 
-  <!-- ── Extensions ── -->
+  <!-- ── File types ── -->
   <div class="section">
     <div class="section-title">Intercepted file types</div>
     <div class="ext-grid" id="ext-grid"></div>
+  </div>
+
+  <!-- ── Spacer pushes actions to bottom ── -->
+  <div class="spacer"></div>
+
+  <!-- ── Actions (always at bottom) ── -->
+  <div class="actions-bar">
+    <button class="btn btn-primary" id="save-btn">Save settings</button>
+    <div class="feedback" id="feedback" style="margin:0;flex:1"></div>
   </div>
 
   <script src="settings.js"></script>

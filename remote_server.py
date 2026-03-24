@@ -520,6 +520,53 @@ class RemoteServer:
             _fail_log.pop(ip, None)
             return {"token": create_token(settings), "expires_in_h": get_token_ttl(settings)}
 
+        @api.get("/version")
+        def get_version():
+            """Public — no auth required. Returns the server's app version."""
+            from updater import APP_VERSION
+            return {"version": APP_VERSION}
+
+        @api.post("/admin/trigger-update")
+        def trigger_remote_update(request: Request):
+            """
+            Triggers a silent auto-update on the server.
+            Accepts either a valid JWT token (Authorization header) or
+            raw {username, password} credentials in the body (for version-mismatch
+            cases where the client has no token yet).
+            """
+            import threading as _th
+            # Try token auth first
+            auth_ok = False
+            try:
+                require_auth(request)
+                auth_ok = True
+            except Exception:
+                pass
+
+            if not auth_ok:
+                # Fallback: basic creds in query params (for version-mismatch case)
+                uname = request.query_params.get("username", "")
+                pwd   = request.query_params.get("password", "")
+                stored_user = settings.get("remote_username", "")
+                stored_hash = settings.get("remote_password_hash", "")
+                if (uname and pwd and uname == stored_user
+                        and verify_password(pwd, stored_hash)):
+                    auth_ok = True
+
+            if not auth_ok:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
+            def _do_update():
+                from updater import (fetch_latest_release, APP_VERSION,
+                                     _is_newer, _launch_download_and_install_silent)
+                release = fetch_latest_release()
+                if release and _is_newer(release["tag"], APP_VERSION):
+                    url = release.get("download_url")
+                    if url:
+                        _launch_download_and_install_silent(app_ref, url)
+            _th.Thread(target=_do_update, daemon=True, name="RemoteUpdate").start()
+            return {"status": "update_check_started"}
+
         @api.get("/status")
         def get_status(_ = Depends(require_auth)):
             items_list = [_item_dict(i) for i in sorted(app_ref.items.keys())]
@@ -835,6 +882,23 @@ class RemoteClient:
                 }
                 self._ok    = True
                 self._alive = True
+
+                # ── Version check (hard block) ────────────────────────────────
+                from updater import APP_VERSION
+                try:
+                    vr = self._httpx.get(
+                        f"{self._base}/version", verify=False, timeout=5)
+                    if vr.status_code == 200:
+                        server_ver = vr.json().get("version", "")
+                        if server_ver and server_ver != APP_VERSION:
+                            # Disconnect — versions incompatible
+                            self._token   = ""
+                            self._headers = {}
+                            self._ok      = False
+                            return False, f"VERSION_MISMATCH:{server_ver}"
+                except Exception:
+                    pass   # Can't check version — proceed anyway
+
                 return True, "Connected"
             return False, f"Auth failed ({r.status_code}): {r.text[:200]}"
         except Exception as e:
@@ -948,6 +1012,40 @@ class RemoteClient:
 
     def get_history(self) -> Optional[dict]:
         return self._get("/history")
+
+    def get_server_version(self) -> Optional[str]:
+        """Returns the server's APP_VERSION string, or None on error."""
+        try:
+            r = self._httpx.get(
+                f"{self._base}/version", verify=False, timeout=5)
+            if r.status_code == 200:
+                return r.json().get("version")
+        except Exception:
+            pass
+        return None
+
+    def trigger_remote_update(self, username: str = "", password: str = "") -> bool:
+        """
+        Asks the server to download and silently install the latest update.
+        Passes credentials as query params for cases where no token is available yet.
+        Returns True if the server accepted the request.
+        """
+        if not self._httpx:
+            return False
+        try:
+            params = {}
+            if not self._ok and username and password:
+                params = {"username": username, "password": password}
+            headers = self._headers if self._ok else {}
+            r = self._httpx.post(
+                f"{self._base}/admin/trigger-update",
+                headers=headers, params=params,
+                verify=False, timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as e:
+            _log.warning("trigger_remote_update failed: %s", e)
+            return False
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

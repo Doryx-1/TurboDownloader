@@ -917,11 +917,66 @@ class SettingsPopup(ctk.CTkToplevel):
 
             self.master._update_remote_status_bar()
             self._refresh_client_badge()
+        elif msg.startswith("VERSION_MISMATCH:"):
+            server_ver = msg.split(":", 1)[1]
+            from updater import APP_VERSION
+            self._rclient_status_lbl.configure(
+                text=f"✗ Version incompatible — serveur v{server_ver}",
+                text_color="#cc4444")
+            self._show_version_mismatch_popup(
+                host=host, port=port, user=user, pwd=pwd,
+                server_ver=server_ver, client_ver=APP_VERSION,
+                client=c)
         else:
             self._rclient_status_lbl.configure(
                 text=f"✗ {msg[:60]}", text_color="#cc4444")
 
+    def _show_version_mismatch_popup(self, host, port, user, pwd,
+                                      server_ver, client_ver, client):
+        """Shows a blocking popup when client and server versions differ."""
+        popup = ctk.CTkToplevel(self)
+        popup.title("Version incompatible")
+        popup.geometry("440x220")
+        popup.resizable(False, False)
+        popup.grab_set()
+        _center_on_master(popup, self)
 
+        ctk.CTkLabel(popup, text="⚠ Connexion refusée — versions incompatibles",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color="#f0a500").pack(pady=(20, 6))
+        ctk.CTkLabel(popup,
+                     text=f"Serveur : v{server_ver}     |     Ce client : v{client_ver}",
+                     font=ctk.CTkFont(size=12), text_color="#888888").pack(pady=(0, 14))
+
+        btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20)
+
+        def _update_server():
+            popup.destroy()
+            ok = client.trigger_remote_update(username=user, password=pwd)
+            if ok:
+                self._rclient_status_lbl.configure(
+                    text="⏳ Mise à jour envoyée au serveur…", text_color="#f0a500")
+            else:
+                self._rclient_status_lbl.configure(
+                    text="✗ Impossible de déclencher la MAJ serveur", text_color="#cc4444")
+
+        def _update_client():
+            popup.destroy()
+            import updater as _upd
+            _upd.check_for_updates(self.master, silent=False)
+
+        ctk.CTkButton(btn_frame, text="⬆ Mettre à jour le serveur",
+                      fg_color="#1f6aa5", hover_color="#1a5a8f",
+                      font=ctk.CTkFont(size=12),
+                      command=_update_server).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_frame, text="⬆ Mettre à jour ce client",
+                      fg_color="#2a6a2a", hover_color="#1a5a1a",
+                      font=ctk.CTkFont(size=12),
+                      command=_update_client).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_frame, text="Annuler",
+                      fg_color="transparent", border_width=1, border_color="#444",
+                      command=popup.destroy).pack(side="right")
 
     def _on_seg_slider(self, val):
         n = int(round(val))
@@ -1109,39 +1164,36 @@ class SettingsPopup(ctk.CTkToplevel):
 
 class _RemoteBrowsePopup(ctk.CTkToplevel):
     """
-    Modal file browser — can navigate either the remote server filesystem
-    (via /browse) or the local filesystem, switchable via a toggle.
+    Modal file browser — navigates either the remote server filesystem (via /browse)
+    or the local filesystem, switchable via a toggle.
 
-    Navigation:
-      - Single click on a folder  → select it as destination (highlighted)
-      - Double click on a folder  → enter it
-      - ⬆ Up button               → go to parent directory
-      - ✔ Select this folder      → confirm and close
+    Local mode ("This PC"):
+      - Split pane: drives panel (1/4) on the left, folder tree (3/4) on the right
+      - Opens at the user's home directory by default
+    Remote mode:
+      - Single-pane list, same as before
 
-    Large directories are paginated (PAGE_SIZE entries at a time) to avoid
-    freezing the UI when a folder contains thousands of files.
+    Both modes have a reactive search bar and A→Z / Z→A sort toggle.
     """
 
-    PAGE_SIZE = 200   # max entries rendered at once
+    PAGE_SIZE = 200
 
     def __init__(self, master, client, callback):
         super().__init__(master)
         self.title("Browse filesystem")
-        self.geometry("540x520")
+        self.geometry("680x560")
         self.resizable(True, True)
         self.grab_set()
 
         self._client      = client
         self._callback    = callback
-        self._current     = ""      # current browsed path
-        self._parent      = None    # parent path (None = at root)
-        self._selected    = ""      # single-clicked folder
-        self._all_entries = []      # full list from server or local
-        self._page        = 0       # current page index
-        self._last_click_time  = 0.0
-        self._last_click_path  = ""
-        self._mode        = "remote" if client else "local"  # "remote" | "local"
-        self._fetch_gen   = 0       # incremented on each navigate — stale results are ignored
+        self._current     = ""
+        self._parent      = None
+        self._all_entries = []
+        self._page        = 0
+        self._mode        = "remote" if client else "local"
+        self._fetch_gen   = 0
+        self._sort_asc    = True   # True = A→Z, False = Z→A
 
         # ── Mode toggle bar ───────────────────────────────────────────────────
         toggle_bar = ctk.CTkFrame(self, fg_color="#1a1a1a")
@@ -1150,8 +1202,6 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         ctk.CTkLabel(toggle_bar, text="Browse:",
                      font=ctk.CTkFont(size=11), text_color="#666").pack(
             side="left", padx=(12, 6), pady=6)
-
-        self._mode_var = ctk.StringVar(value=self._mode)
 
         self._btn_remote = ctk.CTkButton(
             toggle_bar, text="🖥 Remote server", width=130, height=26,
@@ -1170,32 +1220,44 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             command=lambda: self._switch_mode("local"))
         self._btn_local.pack(side="left", pady=6)
 
-        # ── Navigation bar ────────────────────────────────────────────────────
-        nav = ctk.CTkFrame(self, fg_color="#222222")
-        nav.pack(fill="x", padx=0, pady=0)
+        # ── Search + sort bar (both modes) ────────────────────────────────────
+        filter_bar = ctk.CTkFrame(self, fg_color="#1e1e1e")
+        filter_bar.pack(fill="x", padx=0, pady=0)
 
+        self._search_var = ctk.StringVar()
+        self._search_var.trace_add("write", lambda *_: self._apply_filter())
+        ctk.CTkEntry(filter_bar, textvariable=self._search_var,
+                     placeholder_text="🔍 Filter…",
+                     height=28, font=ctk.CTkFont(size=11)).pack(
+            side="left", fill="x", expand=True, padx=(10, 6), pady=5)
+
+        self._sort_btn = ctk.CTkButton(
+            filter_bar, text="A→Z", width=52, height=28,
+            fg_color="transparent", border_width=1, border_color="#333",
+            font=ctk.CTkFont(size=11),
+            command=self._toggle_sort)
+        self._sort_btn.pack(side="left", padx=(0, 10), pady=5)
+
+        # ── Content area — single pane (remote) or split pane (local) ─────────
+        self._content = ctk.CTkFrame(self, fg_color="transparent")
+        self._content.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ── Remote single-pane ────────────────────────────────────────────────
+        self._remote_pane = ctk.CTkFrame(self._content, fg_color="transparent")
+
+        nav = ctk.CTkFrame(self._remote_pane, fg_color="#222222")
+        nav.pack(fill="x", padx=0, pady=0)
         self._up_btn = ctk.CTkButton(
             nav, text="⬆ Up", width=70, height=28,
             fg_color="transparent", border_width=1, border_color="#333333",
-            font=ctk.CTkFont(size=12),
-            command=self._go_up, state="disabled")
+            font=ctk.CTkFont(size=12), command=self._go_up, state="disabled")
         self._up_btn.pack(side="left", padx=(10, 6), pady=6)
-
         self._path_lbl = ctk.CTkLabel(
             nav, text="", text_color="#888888",
             font=ctk.CTkFont(size=10), anchor="w")
         self._path_lbl.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=6)
 
-        # ── Selected destination display ──────────────────────────────────────
-        self._dest_frame = ctk.CTkFrame(self, fg_color="#0d1a0d", corner_radius=0)
-        self._dest_lbl   = ctk.CTkLabel(
-            self._dest_frame, text="No folder selected",
-            text_color="#555555", font=ctk.CTkFont(size=11), anchor="w")
-        self._dest_lbl.pack(fill="x", padx=12, pady=5)
-        self._dest_frame.pack(fill="x", padx=0, pady=0)
-
-        # ── Pagination bar (created before scroll so pack order is correct) ──
-        self._pager = ctk.CTkFrame(self, fg_color="#1a1a1a")
+        self._pager = ctk.CTkFrame(self._remote_pane, fg_color="#1a1a1a")
         self._prev_btn = ctk.CTkButton(
             self._pager, text="◀ Prev", width=90, height=26,
             fg_color="transparent", border_width=1, border_color="#333",
@@ -1209,44 +1271,88 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             fg_color="transparent", border_width=1, border_color="#333",
             font=ctk.CTkFont(size=11), command=self._next_page)
         self._next_btn.pack(side="right", padx=8, pady=4)
-        # pager shown only when needed (pack_forget by default)
 
-        # ── Entry list ────────────────────────────────────────────────────────
-        self._scroll = ctk.CTkScrollableFrame(self)
+        self._scroll = ctk.CTkScrollableFrame(self._remote_pane)
         self._scroll.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ── Local split-pane ──────────────────────────────────────────────────
+        self._local_pane = ctk.CTkFrame(self._content, fg_color="transparent")
+
+        # Left: drives panel (fixed width 140)
+        left = ctk.CTkFrame(self._local_pane, fg_color="#1a1a1a", width=140)
+        left.pack(side="left", fill="y", padx=0, pady=0)
+        left.pack_propagate(False)
+        ctk.CTkLabel(left, text="Drives", font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="#555").pack(anchor="w", padx=10, pady=(8, 4))
+        self._drives_scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
+        self._drives_scroll.pack(fill="both", expand=True, padx=2, pady=(0, 4))
+
+        # Right: nav + tree
+        right = ctk.CTkFrame(self._local_pane, fg_color="transparent")
+        right.pack(side="left", fill="both", expand=True, padx=0, pady=0)
+
+        right_nav = ctk.CTkFrame(right, fg_color="#222222")
+        right_nav.pack(fill="x", padx=0, pady=0)
+        self._up_btn_local = ctk.CTkButton(
+            right_nav, text="⬆ Up", width=70, height=28,
+            fg_color="transparent", border_width=1, border_color="#333333",
+            font=ctk.CTkFont(size=12), command=self._go_up_local, state="disabled")
+        self._up_btn_local.pack(side="left", padx=(8, 6), pady=6)
+        self._path_lbl_local = ctk.CTkLabel(
+            right_nav, text="", text_color="#888888",
+            font=ctk.CTkFont(size=10), anchor="w")
+        self._path_lbl_local.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=6)
+
+        self._tree_scroll = ctk.CTkScrollableFrame(right)
+        self._tree_scroll.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ── Show the right pane based on initial mode ─────────────────────────
+        if self._mode == "remote":
+            self._remote_pane.pack(fill="both", expand=True)
+        else:
+            self._local_pane.pack(fill="both", expand=True)
+
+        # ── Selected destination display ──────────────────────────────────────
+        self._dest_frame = ctk.CTkFrame(self, fg_color="#0d1a0d", corner_radius=0)
+        self._dest_lbl   = ctk.CTkLabel(
+            self._dest_frame, text="No folder selected",
+            text_color="#555555", font=ctk.CTkFont(size=11), anchor="w")
+        self._dest_lbl.pack(fill="x", padx=12, pady=5)
+        self._dest_frame.pack(fill="x", padx=0, pady=0)
 
         # ── Footer ────────────────────────────────────────────────────────────
         foot = ctk.CTkFrame(self, fg_color="#2b2b2b")
         foot.pack(fill="x", padx=0, pady=0)
-
         self._select_btn = ctk.CTkButton(
             foot, text="✔ Select this folder", width=170,
             fg_color="#1f6aa5", state="disabled",
             command=self._confirm_selection)
         self._select_btn.pack(side="left", padx=12, pady=8)
-
         ctk.CTkButton(foot, text="Cancel", width=100,
                       fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=12, pady=8)
 
-        self._navigate("")
+        # ── Initial navigation ────────────────────────────────────────────────
+        if self._mode == "local":
+            self._populate_drives()
+            import pathlib as _pl
+            self._navigate_local_tree(str(_pl.Path.home()), self._fetch_gen)
+        else:
+            self._navigate("")
+
         _center_on_master(self, master)
 
     # ── Mode switch ────────────────────────────────────────────────────────────
 
     def _switch_mode(self, mode: str):
-        """Switches between remote and local filesystem browsing."""
         if mode == self._mode:
             return
         self._mode    = mode
         self._current = ""
         self._parent  = None
-        self._selected = ""
-        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
-        self._dest_frame.configure(fg_color="#0d1a0d")
-        self._select_btn.configure(state="disabled")
+        self._search_var.set("")
+        self._reset_dest_display()
 
-        # Update toggle button styles
         self._btn_remote.configure(
             fg_color="#1f6aa5" if mode == "remote" else "transparent",
             border_color="#1f6aa5" if mode == "remote" else "#333")
@@ -1254,136 +1360,64 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             fg_color="#1f6aa5" if mode == "local" else "transparent",
             border_color="#1f6aa5" if mode == "local" else "#333")
 
-        self._navigate("")
+        if mode == "local":
+            self._remote_pane.pack_forget()
+            self._local_pane.pack(fill="both", expand=True)
+            self._populate_drives()
+            import pathlib as _pl
+            self._navigate_local_tree(str(_pl.Path.home()), self._fetch_gen)
+        else:
+            self._local_pane.pack_forget()
+            self._remote_pane.pack(fill="both", expand=True)
+            self._navigate("")
 
-    # ── Navigation ─────────────────────────────────────────────────────────────
+    # ── Remote navigation (single pane) ───────────────────────────────────────
 
     def _navigate(self, path: str):
-        """Fetches folder contents — remote via API, local via os.listdir."""
+        """Remote-mode: fetch folder from server."""
         self._fetch_gen += 1
         gen = self._fetch_gen
-
         self._path_lbl.configure(text="Loading…", text_color="#888888")
         self._up_btn.configure(state="disabled")
         for w in self._scroll.winfo_children():
             w.destroy()
+        import threading as _th
+        def _fetch():
+            data = self._client.browse(path)
+            if self._fetch_gen == gen:
+                self.after(0, lambda: self._on_data_remote(data, path))
+        _th.Thread(target=_fetch, daemon=True, name="BrowseFetch").start()
 
-        if self._mode == "local":
-            # Local is instant — run in thread anyway to keep UI responsive
-            import threading as _th
-            def _fetch_local():
-                self._navigate_local(path, gen)
-            _th.Thread(target=_fetch_local, daemon=True, name="BrowseFetch").start()
-        else:
-            import threading as _th
-            def _fetch():
-                data = self._client.browse(path)
-                # Only apply result if this is still the latest navigation
-                if self._fetch_gen == gen:
-                    self.after(0, lambda: self._on_data(data, path))
-            _th.Thread(target=_fetch, daemon=True, name="BrowseFetch").start()
-
-    def _navigate_local(self, path: str, gen: int = 0):
-        """Builds folder data from the local filesystem."""
-        import os as _os, sys as _sys
-
-        if not path:
-            if _sys.platform == "win32":
-                import string
-                entries = [
-                    {"name": f"{d}:\\", "path": f"{d}:\\", "is_dir": True}
-                    for d in string.ascii_uppercase
-                    if _os.path.exists(f"{d}:\\")
-                ]
-                data = {"path": "", "parent": None, "entries": entries}
-            else:
-                path = "/"
-                data = self._build_local_data("/")
-        else:
-            data = self._build_local_data(path)
-
-        if self._fetch_gen == gen:
-            self.after(0, lambda: self._on_data(data, path))
-
-    def _build_local_data(self, path: str) -> dict:
-        """Reads a local directory and returns data in the same format as /browse."""
-        import os as _os, pathlib as _pl
-        p = _pl.Path(path)
-        parent = str(p.parent) if str(p.parent) != str(p) else None
-
-        entries = []
-        try:
-            for name in sorted(_os.listdir(path)):
-                full = _os.path.join(path, name)
-                try:
-                    is_dir = _os.path.isdir(full)
-                    entries.append({"name": name, "path": full, "is_dir": is_dir})
-                except PermissionError:
-                    pass
-        except PermissionError:
-            pass
-        return {"path": path, "parent": parent, "entries": entries}
-
-    def _on_data(self, data, requested_path: str):
-        """Called on UI thread once server data is available."""
+    def _on_data_remote(self, data, requested_path: str):
         if not self.winfo_exists():
             return
-
         if data is None:
-            self._path_lbl.configure(
-                text="⚠ Could not reach server", text_color="#cc4444")
+            self._path_lbl.configure(text="⚠ Could not reach server", text_color="#cc4444")
             return
-
         self._current     = data.get("path", requested_path)
         self._parent      = data.get("parent")
         self._all_entries = data.get("entries", [])
         self._page        = 0
-
-        # Update nav bar
-        self._path_lbl.configure(
-            text=self._current or "(Drives)", text_color="#888888")
+        self._path_lbl.configure(text=self._current or "(Root)", text_color="#888888")
         self._up_btn.configure(
             state="normal" if (self._parent is not None or self._current) else "disabled")
+        self._update_dest_display()
+        self._render_remote()
 
-        # Auto-select current folder as destination (user navigated here intentionally)
-        if self._current:
-            short = self._current if len(self._current) <= 55 else "…" + self._current[-52:]
-            self._dest_lbl.configure(text=f"📁 {short}", text_color="#7aaa7a")
-            self._dest_frame.configure(fg_color="#0d1f0d")
-            self._select_btn.configure(state="normal")
-        else:
-            self._dest_lbl.configure(text="No folder selected", text_color="#555555")
-            self._dest_frame.configure(fg_color="#0d1a0d")
-            self._select_btn.configure(state="disabled")
-
-        self._render_page()
-
-    def _render_page(self):
-        """Renders PAGE_SIZE entries for the current page."""
-        # Clear
+    def _render_remote(self):
         for w in self._scroll.winfo_children():
             w.destroy()
-
-        # Reset scroll position to top
         try:
             self._scroll._parent_canvas.yview_moveto(0)
         except Exception:
             pass
-
-        dirs  = [e for e in self._all_entries if e["is_dir"]]
-        files = [e for e in self._all_entries if not e["is_dir"]]
-        ordered = dirs + files
-
-        total      = len(ordered)
+        entries = self._filtered_sorted_entries()
+        total      = len(entries)
         page_count = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
         start      = self._page * self.PAGE_SIZE
         end        = min(start + self.PAGE_SIZE, total)
-        page_items = ordered[start:end]
-
-        for entry in page_items:
-            self._make_entry(entry)
-
-        # Pagination bar
+        for entry in entries[start:end]:
+            self._make_entry_in(self._scroll, entry, self._on_click_remote)
         if page_count > 1:
             self._page_lbl.configure(
                 text=f"Page {self._page + 1} / {page_count}  ({total} items)")
@@ -1393,58 +1427,178 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         else:
             self._pager.pack_forget()
 
-    def _make_entry(self, entry: dict):
-        """Creates one row. Single click = select, double click = enter (dirs only)."""
-        is_dir = entry["is_dir"]
-        path   = entry["path"]
-        name   = entry["name"]
-        label  = f"📁  {name}" if is_dir else f"    {name}"
-
-        btn = ctk.CTkButton(
-            self._scroll, text=label, anchor="w",
-            fg_color="transparent",
-            hover_color="#1a2a3a" if is_dir else "#1a1a1a",
-            text_color="#cccccc" if is_dir else "#555555",
-            font=ctk.CTkFont(size=12),
-            height=28,
-            command=lambda p=path, d=is_dir: self._on_click(p, d),
-        )
-        btn.pack(fill="x", padx=4, pady=1)
-
-        # Highlight if this is the selected folder
-        if is_dir and path == self._selected:
-            btn.configure(fg_color="#1a3a1a", border_width=1, border_color="#2a5a2a")
-
-    def _on_click(self, path: str, is_dir: bool):
-        """Click on a folder → enter it immediately. Select button confirms current folder."""
+    def _on_click_remote(self, path: str, is_dir: bool):
         if not is_dir:
             return
-        # Reset selection when navigating
-        self._selected = ""
-        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
-        self._dest_frame.configure(fg_color="#0d1a0d")
-        self._select_btn.configure(state="disabled")
+        self._reset_dest_display()
         self._navigate(path)
 
     def _go_up(self):
         target = self._parent if self._parent is not None else ""
-        self._selected = ""
-        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
-        self._dest_frame.configure(fg_color="#0d1a0d")
-        self._select_btn.configure(state="disabled")
+        self._reset_dest_display()
         self._navigate(target)
 
     def _prev_page(self):
         if self._page > 0:
             self._page -= 1
-            self._render_page()
+            self._render_remote()
 
     def _next_page(self):
-        total      = len(self._all_entries)
+        total = len(self._filtered_sorted_entries())
         page_count = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
         if self._page < page_count - 1:
             self._page += 1
-            self._render_page()
+            self._render_remote()
+
+    # ── Local split-pane navigation ───────────────────────────────────────────
+
+    def _populate_drives(self):
+        """Fills the left drives panel."""
+        import os as _os, sys as _sys, string as _st
+        for w in self._drives_scroll.winfo_children():
+            w.destroy()
+        if _sys.platform == "win32":
+            drives = [f"{d}:\\" for d in _st.ascii_uppercase if _os.path.exists(f"{d}:\\")]
+        else:
+            drives = ["/"]
+        for drv in drives:
+            ctk.CTkButton(
+                self._drives_scroll, text=drv, anchor="w",
+                fg_color="transparent", hover_color="#2a3a4a",
+                text_color="#aaaaaa", font=ctk.CTkFont(size=12),
+                height=30,
+                command=lambda p=drv: self._navigate_local_tree(p, self._fetch_gen + 1)
+            ).pack(fill="x", padx=2, pady=1)
+
+    def _navigate_local_tree(self, path: str, gen: int):
+        self._fetch_gen  = gen
+        self._page       = 0
+        self._search_var.set("")
+        self._path_lbl_local.configure(text="Loading…", text_color="#888888")
+        self._up_btn_local.configure(state="disabled")
+        for w in self._tree_scroll.winfo_children():
+            w.destroy()
+        import threading as _th
+        def _fetch():
+            data = self._build_local_data(path)
+            if self._fetch_gen == gen:
+                self.after(0, lambda: self._on_data_local(data, path))
+        _th.Thread(target=_fetch, daemon=True, name="BrowseFetch").start()
+
+    def _on_data_local(self, data: dict, requested_path: str):
+        if not self.winfo_exists():
+            return
+        self._current     = data.get("path", requested_path)
+        self._parent      = data.get("parent")
+        self._all_entries = data.get("entries", [])
+        short = self._current if len(self._current) <= 58 else "…" + self._current[-55:]
+        self._path_lbl_local.configure(text=short, text_color="#888888")
+        self._up_btn_local.configure(
+            state="normal" if self._parent is not None else "disabled")
+        self._update_dest_display()
+        self._render_local_tree()
+
+    def _render_local_tree(self):
+        for w in self._tree_scroll.winfo_children():
+            w.destroy()
+        try:
+            self._tree_scroll._parent_canvas.yview_moveto(0)
+        except Exception:
+            pass
+        for entry in self._filtered_sorted_entries():
+            self._make_entry_in(self._tree_scroll, entry, self._on_click_local)
+
+    def _on_click_local(self, path: str, is_dir: bool):
+        if not is_dir:
+            return
+        self._reset_dest_display()
+        gen = self._fetch_gen + 1
+        self._navigate_local_tree(path, gen)
+
+    def _go_up_local(self):
+        if self._parent is None:
+            return
+        self._reset_dest_display()
+        gen = self._fetch_gen + 1
+        self._navigate_local_tree(self._parent, gen)
+
+    # ── Shared helpers ─────────────────────────────────────────────────────────
+
+    def _build_local_data(self, path: str) -> dict:
+        import os as _os, pathlib as _pl
+        p      = _pl.Path(path)
+        parent = str(p.parent) if str(p.parent) != str(p) else None
+        entries = []
+        try:
+            for name in _os.listdir(path):
+                full = _os.path.join(path, name)
+                try:
+                    entries.append({"name": name, "path": full,
+                                    "is_dir": _os.path.isdir(full)})
+                except PermissionError:
+                    pass
+        except PermissionError:
+            pass
+        return {"path": path, "parent": parent, "entries": entries}
+
+    def _filtered_sorted_entries(self) -> list:
+        """Returns entries filtered by search and sorted per current sort mode."""
+        query = self._search_var.get().strip().lower()
+        dirs  = [e for e in self._all_entries if e["is_dir"]]
+        files = [e for e in self._all_entries if not e["is_dir"]]
+        if query:
+            dirs  = [e for e in dirs  if query in e["name"].lower()]
+            files = [e for e in files if query in e["name"].lower()]
+        key = lambda e: e["name"].lower()
+        dirs.sort(key=key,  reverse=not self._sort_asc)
+        files.sort(key=key, reverse=not self._sort_asc)
+        return dirs + files
+
+    def _apply_filter(self):
+        """Called whenever search text changes."""
+        self._page = 0
+        if self._mode == "remote":
+            self._render_remote()
+        else:
+            self._render_local_tree()
+
+    def _toggle_sort(self):
+        self._sort_asc = not self._sort_asc
+        self._sort_btn.configure(text="A→Z" if self._sort_asc else "Z→A")
+        self._page = 0
+        if self._mode == "remote":
+            self._render_remote()
+        else:
+            self._render_local_tree()
+
+    def _make_entry_in(self, container, entry: dict, on_click):
+        is_dir = entry["is_dir"]
+        path   = entry["path"]
+        name   = entry["name"]
+        label  = f"📁  {name}" if is_dir else f"    {name}"
+        btn = ctk.CTkButton(
+            container, text=label, anchor="w",
+            fg_color="transparent",
+            hover_color="#1a2a3a" if is_dir else "#1a1a1a",
+            text_color="#cccccc" if is_dir else "#555555",
+            font=ctk.CTkFont(size=12), height=28,
+            command=lambda p=path, d=is_dir: on_click(p, d),
+        )
+        btn.pack(fill="x", padx=4, pady=1)
+
+    def _update_dest_display(self):
+        if self._current:
+            short = self._current if len(self._current) <= 60 else "…" + self._current[-57:]
+            self._dest_lbl.configure(text=f"📁 {short}", text_color="#7aaa7a")
+            self._dest_frame.configure(fg_color="#0d1f0d")
+            self._select_btn.configure(state="normal")
+        else:
+            self._reset_dest_display()
+
+    def _reset_dest_display(self):
+        self._dest_lbl.configure(text="No folder selected", text_color="#555555")
+        self._dest_frame.configure(fg_color="#0d1a0d")
+        self._select_btn.configure(state="disabled")
 
     def _confirm_selection(self):
         path = self._current
