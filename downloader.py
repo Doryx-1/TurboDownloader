@@ -128,6 +128,7 @@ class TurboDownloader(ctk.CTk):
         self._taskbar: TaskbarProgress = None
         self.after(500, self._init_taskbar)
         self.after(1000, self._check_dependencies)
+        self.after(3000, self._check_for_updates_startup)
         self.after(600, self._update_remote_status_bar)   # refresh badge after UI ready
 
         self.after(80, self._process_ui_queue)
@@ -486,6 +487,15 @@ class TurboDownloader(ctk.CTk):
                 self._on_start(),
             ),
         )
+
+    def _check_for_updates_startup(self):
+        """Checks for updates silently at startup — popup only if newer version found."""
+        if not self._settings.get("check_updates", True):
+            return
+        try:
+            _updater.check_for_updates(self, silent=True)
+        except Exception as e:
+            _log.debug("Update check error: %s", e)
 
     def _check_dependencies(self):
         """Checks ffmpeg and Node.js availability. Installs Node if missing."""
@@ -1674,6 +1684,90 @@ class TurboDownloader(ctk.CTk):
         def __init__(self, msg: str):
             self.msg = msg
 
+    # ── File-exists handling ─────────────────────────────────────────────────
+
+    def _check_file_exists(self, it) -> str:
+        """
+        Returns: 'resume' | 'replace' | 'skip' | 'rename'
+        Called from worker thread — uses ui_call for the popup.
+        """
+        temp_path = self._get_temp_path(it)
+        # .part file exists → always resume, never ask
+        if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+            return "resume"
+        # Final file doesn't exist → just download
+        if not os.path.exists(it.dest_path):
+            return "replace"
+        # Final file exists — apply configured action
+        action = self._settings.get("file_exists_action", "ask")
+        if action == "ask":
+            try:
+                return self.ui_call(self._ask_file_exists_popup, it)
+            except Exception:
+                return "replace"   # fallback if ui_call times out
+        return action
+
+    def _ask_file_exists_popup(self, it) -> str:
+        """Shows a blocking dialog. Must be called on the UI thread via ui_call."""
+        import customtkinter as ctk
+        result = {"action": "skip"}
+        popup = ctk.CTkToplevel(self)
+        popup.title("File already exists")
+        popup.geometry("420x210")
+        popup.resizable(False, False)
+        popup.grab_set()
+        popup.lift()
+        self.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width()  - 420) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - 210) // 2
+        popup.geometry(f"+{max(0,x)}+{max(0,y)}")
+
+        name = os.path.basename(it.dest_path)
+        display = name if len(name) <= 50 else name[:47] + "…"
+        ctk.CTkLabel(popup, text="File already exists:",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(pady=(16, 2))
+        ctk.CTkLabel(popup, text=display, text_color="gray",
+                     font=ctk.CTkFont(size=11)).pack(pady=(0, 14))
+
+        remember_var = ctk.BooleanVar(value=False)
+        btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 8))
+
+        def _choose(action: str):
+            result["action"] = action
+            if remember_var.get():
+                self._settings["file_exists_action"] = action
+            popup.grab_release()
+            popup.destroy()
+
+        ctk.CTkButton(btn_frame, text="↺  Replace", width=110,
+                      fg_color="#5a1515", hover_color="#3a0a0a",
+                      command=lambda: _choose("replace")).pack(side="left", padx=4)
+        ctk.CTkButton(btn_frame, text="↷  Skip", width=110,
+                      fg_color="#2a2a2a", hover_color="#1a1a1a",
+                      command=lambda: _choose("skip")).pack(side="left", padx=4)
+        ctk.CTkButton(btn_frame, text="✎  Rename", width=110,
+                      fg_color="#1f4a7a", hover_color="#183a5a",
+                      command=lambda: _choose("rename")).pack(side="left", padx=4)
+        ctk.CTkCheckBox(popup, text="Remember for this session",
+                        variable=remember_var,
+                        font=ctk.CTkFont(size=11)).pack(pady=(0, 12))
+        popup.wait_window()
+        return result["action"]
+
+    @staticmethod
+    def _make_unique_path(dest_path: str) -> str:
+        """Returns dest_path with _2, _3… suffix until non-existing."""
+        if not os.path.exists(dest_path):
+            return dest_path
+        base, ext = os.path.splitext(dest_path)
+        n = 2
+        while True:
+            candidate = f"{base}_{n}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            n += 1
+
     def _resolve_resume(self, it) -> tuple[int, dict]:
         """
         Checks existing .part or dest file to compute resume offset.
@@ -1793,6 +1887,25 @@ class TurboDownloader(ctk.CTk):
             it.started_at = time.time()
             it.error_msg  = ""
             self.ui(self._update_row_ui, idx)
+
+            # ── File-exists check ─────────────────────────────────────────────
+            exists_action = self._check_file_exists(it)
+            if exists_action == "skip":
+                it.state = "skipped"
+                self.ui(self._update_row_ui, idx)
+                self.ui(self._refresh_filter_counts)
+                return
+            elif exists_action == "rename":
+                it.dest_path = self._make_unique_path(it.dest_path)
+                it.filename  = os.path.basename(it.dest_path)
+                self.ui(self._update_row_ui, idx)
+            elif exists_action == "replace":
+                try:
+                    if os.path.exists(it.dest_path):
+                        os.remove(it.dest_path)
+                except OSError:
+                    pass
+            # "resume" → fall through to _resolve_resume normally
 
             existing_size, headers = self._resolve_resume(it)
 
@@ -2084,14 +2197,17 @@ class TurboDownloader(ctk.CTk):
 
                     if is_remote_client:
                         # ── Mode client : envoyer chaque URL au serveur distant ──
+                        # Use the remote destination folder configured in client settings
+                        # (the path must exist on the SERVER, not the client)
+                        remote_dest = self._settings.get("remote_client_dest", "").strip() or None
                         for entry in all_confirmed:
                             url         = entry[0]
                             wtype       = entry[2] if len(entry) > 2 else "http"
                             format_id   = entry[3] if len(entry) > 3 else None
                             audio_only  = entry[4] if len(entry) > 4 else False
-                            dest        = entry[5] if len(entry) > 5 else default_dest
+                            # Always use remote_dest — the local dest is meaningless on the server
                             result = self._remote_client.add_url(
-                                url, dest or None,
+                                url, remote_dest,
                                 worker_type=wtype,
                                 format_id=format_id,
                                 audio_only=bool(audio_only),
