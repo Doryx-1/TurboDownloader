@@ -2207,12 +2207,15 @@ class TurboDownloader(ctk.CTk):
                                                    keep_tree=True)
 
                         # Envoyer au serveur les URLs distantes
-                        remote_dest = self._settings.get("remote_client_dest", "").strip() or None
+                        remote_dest_setting = self._settings.get("remote_client_dest", "").strip() or None
                         for entry in remote_entries:
                             url        = entry[0]
                             wtype      = entry[2] if len(entry) > 2 else "http"
                             format_id  = entry[3] if len(entry) > 3 else None
                             audio_only = entry[4] if len(entry) > 4 else False
+                            entry_dest = entry[5] if len(entry) > 5 else ""
+                            # Priorité : dest choisi dans la popup > remote_client_dest des settings
+                            remote_dest = (entry_dest.strip() or remote_dest_setting) or None
                             result = self._remote_client.add_url(
                                 url, remote_dest,
                                 worker_type=wtype,
