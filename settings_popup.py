@@ -969,7 +969,7 @@ class SettingsPopup(ctk.CTkToplevel):
         client = getattr(self.master, "_remote_client", None)
         if not client or not client.connected:
             return
-        _RemoteBrowsePopup(self, client, callback=lambda path: (
+        _RemoteBrowsePopup(self, client, callback=lambda path, mode="remote": (
             self._rclient_dest_e.delete(0, "end"),
             self._rclient_dest_e.insert(0, path)
         ))
@@ -1449,5 +1449,5 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
     def _confirm_selection(self):
         path = self._current
         if path:
-            self._callback(path)
+            self._callback(path, self._mode)
             self.destroy()

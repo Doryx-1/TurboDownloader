@@ -418,9 +418,10 @@ class YtdlpPopup(ctk.CTkToplevel):
         client = getattr(self.master, "_remote_client", None)
         if client and getattr(client, "connected", False):
             from settings_popup import _RemoteBrowsePopup
-            _RemoteBrowsePopup(self, client, callback=lambda path: (
+            _RemoteBrowsePopup(self, client, callback=lambda path, mode="remote": (
                 self._dest_entry.delete(0, "end"),
                 self._dest_entry.insert(0, path),
+                setattr(self, "_dest_is_local", mode == "local"),
             ))
             return
         # Sinon browse local
@@ -487,6 +488,7 @@ class YtdlpPopup(ctk.CTkToplevel):
         quality_key = self._quality_var.get()
         audio_only  = quality_key == "_audioonly_"
         dest        = self._dest_entry.get().strip() or self._default_dest
+        is_local    = getattr(self, "_dest_is_local", False)
         confirmed   = []
 
         for url in self._urls:
@@ -496,6 +498,7 @@ class YtdlpPopup(ctk.CTkToplevel):
                 confirmed.append({
                     "url": url, "format_id": None,
                     "audio_only": audio_only, "dest": dest, "title": "",
+                    "is_local": is_local,
                 })
                 continue
 
@@ -523,6 +526,7 @@ class YtdlpPopup(ctk.CTkToplevel):
                         "playlist_title": meta.get("title", ""),
                         "playlist_index": idx_counter,
                         "playlist_total": total_checked,
+                        "is_local":       is_local,
                     })
             else:
                 confirmed.append({
@@ -531,6 +535,7 @@ class YtdlpPopup(ctk.CTkToplevel):
                     "audio_only": audio_only,
                     "dest":       dest,
                     "title":      meta.get("title", ""),
+                    "is_local":   is_local,
                 })
 
         self.destroy()

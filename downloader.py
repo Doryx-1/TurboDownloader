@@ -2178,6 +2178,7 @@ class TurboDownloader(ctk.CTk):
 
                 http_confirmed  = []
                 ytdlp_confirmed = []
+                local_urls: set = set()  # URLs to download locally (bypassing server)
 
                 # One event per popup — both must be set before launching
                 http_done  = threading.Event()
@@ -2196,16 +2197,22 @@ class TurboDownloader(ctk.CTk):
                         return
 
                     if is_remote_client:
-                        # ── Mode client : envoyer chaque URL au serveur distant ──
-                        # Use the remote destination folder configured in client settings
-                        # (the path must exist on the SERVER, not the client)
+                        # ── Mode client : séparer les téléchargements locaux et distants ──
+                        remote_entries = [e for e in all_confirmed if e[0] not in local_urls]
+                        local_entries  = [e for e in all_confirmed if e[0] in local_urls]
+
+                        # Télécharger localement les URLs choisies via "This PC"
+                        if local_entries:
+                            self._launch_downloads(local_entries, workers,
+                                                   keep_tree=True)
+
+                        # Envoyer au serveur les URLs distantes
                         remote_dest = self._settings.get("remote_client_dest", "").strip() or None
-                        for entry in all_confirmed:
-                            url         = entry[0]
-                            wtype       = entry[2] if len(entry) > 2 else "http"
-                            format_id   = entry[3] if len(entry) > 3 else None
-                            audio_only  = entry[4] if len(entry) > 4 else False
-                            # Always use remote_dest — the local dest is meaningless on the server
+                        for entry in remote_entries:
+                            url        = entry[0]
+                            wtype      = entry[2] if len(entry) > 2 else "http"
+                            format_id  = entry[3] if len(entry) > 3 else None
+                            audio_only = entry[4] if len(entry) > 4 else False
                             result = self._remote_client.add_url(
                                 url, remote_dest,
                                 worker_type=wtype,
@@ -2216,7 +2223,7 @@ class TurboDownloader(ctk.CTk):
                                 _log.warning("Failed to send URL: %s", url[:80])
                             else:
                                 _log.debug("Sent to server: %s", url[:80])
-                                self._add_remote_shadow_row(url, dest)
+                                self._add_remote_shadow_row(url, remote_dest or "")
                         popup_done.set()
                     else:
                         # ── Mode local : comportement normal ─────────────────────
@@ -2225,10 +2232,13 @@ class TurboDownloader(ctk.CTk):
                                                dest_override=default_dest)
                         popup_done.set()
 
-                def on_http_confirm(selected_files, dest_path="", kt=True):
+                def on_http_confirm(selected_files, dest_path="", kt=True, is_local=False):
                     # dest_path vient de la popup (peut être modifié à la main)
                     resolved_dest = dest_path or default_dest
                     self._record_dest_history(resolved_dest)
+                    if is_local:
+                        for u, r, *_ in selected_files:
+                            local_urls.add(u)
                     http_confirmed.extend(
                         (u, r, "http", None, False, resolved_dest)
                         for u, r, *_ in selected_files
@@ -2248,6 +2258,8 @@ class TurboDownloader(ctk.CTk):
                     for item in items:
                         dest = item.get("dest", default_dest)
                         self._record_dest_history(dest)
+                        if item.get("is_local", False):
+                            local_urls.add(item["url"])
                         purl  = item.get("playlist_url")
                         gid   = group_ids.get(purl) if purl else None
                         ytdlp_confirmed.append((

@@ -518,9 +518,10 @@ class FileTreePopup(ctk.CTkToplevel):
         client = getattr(self.master, "_remote_client", None)
         if client and getattr(client, "connected", False):
             from settings_popup import _RemoteBrowsePopup
-            _RemoteBrowsePopup(self, client, callback=lambda path: (
+            _RemoteBrowsePopup(self, client, callback=lambda path, mode="remote": (
                 self._dest_entry.delete(0, "end"),
                 self._dest_entry.insert(0, path),
+                setattr(self, "_dest_is_local", mode == "local"),
             ))
             return
         # Sinon browse local
@@ -583,11 +584,12 @@ class FileTreePopup(ctk.CTkToplevel):
     def _cancel(self):
         """Close without selection — unblocks popup_done."""
         self.destroy()
-        self._on_confirm([], "", False)
+        self._on_confirm([], "", False, False)
 
     def _confirm(self):
         selected   = [(n.file_url, n.rel_dir) for n in self._all_file_nodes if n.var.get()]
         dest_path  = self._dest_entry.get().strip()
         keep_tree  = self._keep_tree_var.get()
+        is_local   = getattr(self, "_dest_is_local", False)
         self.destroy()
-        self._on_confirm(selected, dest_path, keep_tree)
+        self._on_confirm(selected, dest_path, keep_tree, is_local)
