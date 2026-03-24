@@ -123,16 +123,21 @@ def save_settings(settings: dict):
 
 def _machine_key() -> bytes:
     """
-    Derives a Fernet key from a machine-specific secret.
-    Uses a combination of username + hostname — stable across reboots,
-    unique per machine, never stored on disk.
+    Returns (or generates) a random Fernet key stored in ~/.turbodownloader/keystore.
+    Generated once, persisted across reboots, unique per installation.
     """
-    import hashlib, socket, os
+    import pathlib, sys
     from cryptography.fernet import Fernet
-    import base64
-    seed = f"{os.getlogin()}@{socket.gethostname()}:TurboDL-salt-v1"
-    digest = hashlib.sha256(seed.encode()).digest()
-    return base64.urlsafe_b64encode(digest)   # 32 bytes → valid Fernet key
+    keystore = pathlib.Path.home() / ".turbodownloader" / "keystore"
+    if keystore.exists():
+        return keystore.read_bytes()
+    key = Fernet.generate_key()
+    keystore.parent.mkdir(parents=True, exist_ok=True)
+    keystore.write_bytes(key)
+    if sys.platform != "win32":
+        import os as _os
+        _os.chmod(keystore, 0o600)
+    return key
 
 
 def _encrypt_password(plaintext: str) -> str:
@@ -859,7 +864,7 @@ class SettingsPopup(ctk.CTkToplevel):
             entry.delete(0, "end")
             entry.insert(0, profile.get("user", ""))
         self._rclient_pass_e.delete(0, "end")
-        self._rclient_pass_e.insert(0, profile.get("password", ""))
+        self._rclient_pass_e.insert(0, _decrypt_password(profile.get("password", "")))
 
     def _save_profile(self):
         """Save current fields as a new or existing profile."""
@@ -878,7 +883,7 @@ class SettingsPopup(ctk.CTkToplevel):
         # Update or add
         existing = next((p for p in self._profiles if p["name"] == name), None)
         entry = {"name": name, "host": host, "port": int(port or 9988),
-                 "user": user, "password": pwd}
+                 "user": user, "password": _encrypt_password(pwd)}
         if existing:
             self._profiles[self._profiles.index(existing)] = entry
         else:

@@ -1194,7 +1194,11 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             group_total = entry[10] if len(entry) > 10 else 0
 
             effective_base = entry_dest or base
-            name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
+            _decoded_url = unquote(file_url.split("?")[0])
+            name = os.path.basename(_decoded_url) or "file.bin"
+            # Strip path-traversal and OS-illegal characters from the filename
+            import re as _re
+            name = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name) or "file.bin"
             if wtype == "ytdlp":
                 from urllib.parse import urlparse
                 host = urlparse(file_url).netloc.lstrip("www.")

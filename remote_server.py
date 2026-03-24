@@ -56,6 +56,11 @@ try:
         audio_only:  bool           = False  # yt-dlp audio-only mode
         model_config = {"extra": "ignore"}
 
+    class TriggerUpdateRequest(BaseModel):
+        username: Optional[str] = None
+        password: Optional[str] = None
+        model_config = {"extra": "ignore"}
+
 except ImportError:
     LoginRequest  = None   # type: ignore
     AddURLRequest = None   # type: ignore
@@ -166,25 +171,20 @@ def ensure_ssl_cert() -> bool:
 # ── Password helpers ──────────────────────────────────────────────────────────
 
 def hash_password(password: str) -> str:
-    """Returns a bcrypt hash of the password (or SHA-256 fallback)."""
-    try:
-        import bcrypt
-        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    except ImportError:
-        # Fallback — less secure but avoids hard crash
-        return "sha256:" + hashlib.sha256(password.encode()).hexdigest()
+    """Returns a bcrypt hash of the password. Raises RuntimeError if bcrypt is unavailable."""
+    import bcrypt
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verifies a password against a stored hash."""
-    try:
-        import bcrypt
-        if hashed.startswith("sha256:"):
-            # Migration path — bcrypt now available
-            return ("sha256:" + hashlib.sha256(password.encode()).hexdigest()) == hashed
-        return bcrypt.checkpw(password.encode(), hashed.encode())
-    except ImportError:
+    """Verifies a password against a stored hash.
+    Supports sha256: prefix as a one-time migration path (no new sha256 hashes are created)."""
+    import bcrypt
+    if hashed.startswith("sha256:"):
+        # Migration path only — user must reset password to upgrade to bcrypt
+        _log.warning("Password stored as unsalted SHA-256 — user should reset their password")
         return ("sha256:" + hashlib.sha256(password.encode()).hexdigest()) == hashed
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 # ── URL validation ────────────────────────────────────────────────────────────
@@ -255,10 +255,11 @@ _LOCAL_TOKEN_TTL  = 3600   # 1 hour in seconds
 
 
 def generate_local_token() -> str:
-    """Generates a new local token and writes it to a temp file."""
+    """Generates a new local token and writes it to a temp file with a timestamp."""
     token = _secrets.token_hex(32)
     try:
-        _LOCAL_TOKEN_FILE.write_text(token, encoding="utf-8")
+        data = {"token": token, "generated_at": time.time()}
+        _LOCAL_TOKEN_FILE.write_text(json.dumps(data), encoding="utf-8")
         import sys as _sys
         if _sys.platform != "win32":
             import os as _os
@@ -269,10 +270,16 @@ def generate_local_token() -> str:
 
 
 def verify_local_token(token: str) -> bool:
-    """Returns True if the token matches the stored local token."""
+    """Returns True if the token matches the stored local token and has not expired."""
     try:
-        stored = _LOCAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
-        return bool(stored) and token == stored
+        raw = _LOCAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        data = json.loads(raw)
+        stored_token  = data.get("token", "")
+        generated_at  = data.get("generated_at", 0)
+        if time.time() - generated_at > _LOCAL_TOKEN_TTL:
+            _log.debug("Local token expired")
+            return False
+        return bool(stored_token) and token == stored_token
     except Exception:
         return False
 
@@ -308,7 +315,7 @@ class RemoteServer:
             return False
 
         port      = int(self._settings.get("remote_port", DEFAULT_PORT))
-        use_ssl   = False   # HTTP — browsers block self-signed certs in extensions
+        use_ssl   = True    # HTTPS — self-signed cert (must be trusted once in browser)
 
         if use_ssl:
             ssl_ok = ensure_ssl_cert()
@@ -499,23 +506,24 @@ class RemoteServer:
         _fail_log: dict = {}
         _FAIL_WINDOW  = 60
         _FAIL_MAX     = 10
-        _LOCKOUT_TIME = 30
+        _LOCKOUT_SECS = 30
 
         @api.post("/auth/login")
         def login(req: LoginRequest = Body(...), request: Request = None):
-            import time as _t
-            now = _t.time()
+            now = time.time()
             ip  = request.client.host if request and request.client else "unknown"
             attempts = [ts for ts in _fail_log.get(ip, []) if now - ts < _FAIL_WINDOW]
             if len(attempts) >= _FAIL_MAX:
-                _t.sleep(_LOCKOUT_TIME)
-                raise HTTPException(status_code=429, detail="Too many attempts — wait and retry")
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Too many attempts — retry after {_LOCKOUT_SECS} seconds",
+                    headers={"Retry-After": str(_LOCKOUT_SECS)},
+                )
             stored_user = settings.get("remote_username", "")
             stored_hash = settings.get("remote_password_hash", "")
             if req.username != stored_user or not verify_password(req.password, stored_hash):
                 attempts.append(now)
                 _fail_log[ip] = attempts
-                _t.sleep(min(0.5 * len(attempts), 5.0))
                 raise HTTPException(status_code=401, detail="Bad credentials")
             _fail_log.pop(ip, None)
             return {"token": create_token(settings), "expires_in_h": get_token_ttl(settings)}
@@ -527,11 +535,12 @@ class RemoteServer:
             return {"version": APP_VERSION}
 
         @api.post("/admin/trigger-update")
-        def trigger_remote_update(request: Request):
+        def trigger_remote_update(request: Request,
+                                  body: TriggerUpdateRequest = Body(default=TriggerUpdateRequest())):
             """
             Triggers a silent auto-update on the server.
             Accepts either a valid JWT token (Authorization header) or
-            raw {username, password} credentials in the body (for version-mismatch
+            {username, password} credentials in the JSON body (for version-mismatch
             cases where the client has no token yet).
             """
             import threading as _th
@@ -544,9 +553,9 @@ class RemoteServer:
                 pass
 
             if not auth_ok:
-                # Fallback: basic creds in query params (for version-mismatch case)
-                uname = request.query_params.get("username", "")
-                pwd   = request.query_params.get("password", "")
+                # Fallback: credentials in JSON body (never in query params)
+                uname = (body.username or "").strip()
+                pwd   = (body.password or "").strip()
                 stored_user = settings.get("remote_username", "")
                 stored_hash = settings.get("remote_password_hash", "")
                 if (uname and pwd and uname == stored_user
@@ -562,13 +571,14 @@ class RemoteServer:
                 return {"status": "check_failed"}
             if not _is_newer(release["tag"], APP_VERSION):
                 return {"status": "already_up_to_date"}
-            url = release.get("download_url")
+            url        = release.get("download_url")
+            sha256_url = release.get("sha256_url")
             if not url:
                 return {"status": "no_download_url"}
 
             def _do_update():
                 from updater import _launch_download_and_install_silent
-                _launch_download_and_install_silent(app_ref, url)
+                _launch_download_and_install_silent(app_ref, url, sha256_url=sha256_url)
             _th.Thread(target=_do_update, daemon=True, name="RemoteUpdate").start()
             return {"status": "update_started"}
 
@@ -1041,24 +1051,24 @@ class RemoteClient:
     def trigger_remote_update(self, username: str = "", password: str = "") -> str:
         """
         Asks the server to download and silently install the latest update.
-        Passes credentials as query params for cases where no token is available yet.
+        Sends credentials in the JSON body (never in query params).
         Returns the server status string:
-          "update_started"    — update download launched
+          "update_started"     — update download launched
           "already_up_to_date" — server is already on the latest release
-          "check_failed"      — server could not reach GitHub
-          "no_download_url"   — release found but no installer asset
-          "error"             — network/auth error
+          "check_failed"       — server could not reach GitHub
+          "no_download_url"    — release found but no installer asset
+          "error"              — network/auth error
         """
         if not self._httpx:
             return "error"
         try:
-            params = {}
+            body    = {}
+            headers = self._headers if self._ok else {"Content-Type": "application/json"}
             if not self._ok and username and password:
-                params = {"username": username, "password": password}
-            headers = self._headers if self._ok else {}
+                body = {"username": username, "password": password}
             r = self._httpx.post(
                 f"{self._base}/admin/trigger-update",
-                headers=headers, params=params,
+                headers=headers, json=body,
                 verify=False, timeout=15,
             )
             if r.status_code == 200:

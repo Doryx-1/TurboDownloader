@@ -71,14 +71,18 @@ def fetch_latest_release() -> dict | None:
         name = data.get("name", tag)
         body = data.get("body", "")
 
-        # Find the setup exe in assets
-        download_url = None
+        # Find the setup exe and its SHA-256 checksum file in assets
+        download_url  = None
+        sha256_url    = None
         for asset in data.get("assets", []):
-            if asset.get("name", "").lower().endswith(".exe"):
+            aname = asset.get("name", "").lower()
+            if aname.endswith(".exe"):
                 download_url = asset.get("browser_download_url")
-                break
+            elif aname.endswith(".exe.sha256") or aname == "sha256sums.txt":
+                sha256_url = asset.get("browser_download_url")
 
-        return {"tag": tag, "name": name, "body": body, "download_url": download_url}
+        return {"tag": tag, "name": name, "body": body,
+                "download_url": download_url, "sha256_url": sha256_url}
 
     except Exception as e:
         _log.debug("Update check failed: %s", e)
@@ -159,7 +163,9 @@ def _show_update_popup(app, release: dict, current_version: str):
     def _download_and_install():
         popup.destroy()
         if release.get("download_url"):
-            _launch_download_and_install(app, release["download_url"], release["tag"])
+            _launch_download_and_install(
+                app, release["download_url"], release["tag"],
+                sha256_url=release.get("sha256_url"))
         else:
             # No direct download — open GitHub releases page
             import webbrowser
@@ -208,7 +214,32 @@ def _show_no_update_popup(app):
                   command=popup.destroy).pack()
 
 
-def _launch_download_and_install(app, url: str, tag: str):
+def _verify_sha256(file_path: pathlib.Path, sha256_url: str | None) -> tuple[bool, str]:
+    """
+    Downloads the .sha256 file and verifies the installer's hash.
+    Returns (ok, message).
+    If sha256_url is None or the file is unavailable, returns (True, "skipped") — best-effort.
+    """
+    if not sha256_url:
+        return True, "skipped"
+    try:
+        import urllib.request, hashlib
+        with urllib.request.urlopen(sha256_url, timeout=8) as resp:
+            content = resp.read().decode().strip()
+        # Format: "<hex>  filename" or just "<hex>"
+        expected = content.split()[0].lower()
+        digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        if digest == expected:
+            _log.info("SHA-256 verified: %s", digest[:16] + "…")
+            return True, "ok"
+        _log.error("SHA-256 MISMATCH — expected %s, got %s", expected[:16], digest[:16])
+        return False, f"SHA-256 mismatch — installer may be corrupted or tampered"
+    except Exception as e:
+        _log.warning("SHA-256 check skipped: %s", e)
+        return True, "skipped"   # best-effort: don't block if checksum file is unavailable
+
+
+def _launch_download_and_install(app, url: str, tag: str, sha256_url: str | None = None):
     """
     Downloads the setup exe to a temp folder and launches it.
     Shows a progress popup while downloading.
@@ -255,6 +286,15 @@ def _launch_download_and_install(app, url: str, tag: str):
             bar.stop()
             urllib.request.urlretrieve(url, str(dest), reporthook=_progress)
 
+            # Verify SHA-256 integrity before launching
+            app.after(0, lambda: status_lbl.configure(text="Verifying integrity…"))
+            ok, msg = _verify_sha256(dest, sha256_url)
+            if not ok:
+                _log.error("Integrity check failed: %s", msg)
+                app.after(0, lambda m=msg: status_lbl.configure(
+                    text=f"⚠ {m}", text_color="#cc4444"))
+                return
+
             # Launch installer and quit
             app.after(0, lambda: _install(dest, popup, app))
 
@@ -266,7 +306,7 @@ def _launch_download_and_install(app, url: str, tag: str):
     threading.Thread(target=_do_download, daemon=True, name="UpdateDownload").start()
 
 
-def _launch_download_and_install_silent(app, url: str):
+def _launch_download_and_install_silent(app, url: str, sha256_url: str | None = None):
     """
     Downloads the setup exe and installs it silently (no UI).
     Used when a remote update is triggered via the API.
@@ -277,6 +317,10 @@ def _launch_download_and_install_silent(app, url: str):
             dest = pathlib.Path(tempfile.gettempdir()) / SETUP_FILENAME
             urllib.request.urlretrieve(url, str(dest))
             _log.info("Silent update downloaded to %s", dest)
+            ok, msg = _verify_sha256(dest, sha256_url)
+            if not ok:
+                _log.error("Silent update aborted — integrity check failed: %s", msg)
+                return
             app.after(0, lambda: _install_silent(dest, app))
         except Exception as e:
             _log.error("Silent update download failed: %s", e)
