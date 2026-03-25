@@ -84,16 +84,27 @@ class RemoteTrackerMixin:
 
     def _apply_remote_settings(self):
         """
-        Called by on_settings_save — restarts the server if the enabled flag changed.
+        Called by on_settings_save — starts/stops servers as needed.
+        Server should run if extension_enabled OR remote_enabled.
+        Restarts if remote_enabled changed (HTTPS component must be added/removed).
         """
-        enabled = self._settings.get("remote_enabled", False)
-        running = self._remote_server is not None and self._remote_server.is_running
+        ext_on     = self._settings.get("extension_enabled", True)
+        remote_on  = self._settings.get("remote_enabled", False)
+        should_run = ext_on or remote_on
+        running    = self._remote_server is not None and self._remote_server.is_running
 
-        if enabled and not running:
-            self._start_remote_if_enabled()
-        elif not enabled and running:
+        if not should_run and running:
             self._remote_server.stop()
             self._remote_server = None
+        elif should_run and not running:
+            self._start_remote_if_enabled()
+        elif should_run and running:
+            # Restart only if the HTTPS component needs to change state
+            https_running = self._remote_server._remote_server is not None
+            if remote_on != https_running:
+                self._remote_server.stop()
+                self._remote_server = None
+                self._start_remote_if_enabled()
 
         self._update_remote_status_bar()
 
