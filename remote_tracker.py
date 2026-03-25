@@ -22,18 +22,25 @@ class RemoteTrackerMixin:
         self._settings["dest_history"] = history[:10]
 
     def _start_remote_if_enabled(self):
-        """Starts the remote control server if enabled in settings.
-        Also starts the local extension server (always) and auto-connects as client."""
+        """Starts servers based on settings:
+        - Extension HTTP server (127.0.0.1:9988) if extension_enabled (default True)
+        - Remote HTTPS server (0.0.0.0:9989) if remote_enabled + credentials set
+        Also auto-connects as client if configured."""
 
         # ── Server ────────────────────────────────────────────────────────────
-        if self._settings.get("remote_enabled", False):
-            if self._settings.get("remote_username") and self._settings.get("remote_password_hash"):
-                self._remote_server = remote_server.RemoteServer(self, self._settings)
-                ok = self._remote_server.start()
-                if not ok:
-                    self._remote_server = None
-            else:
-                print("[remote] Skipping server start — username or password not configured")
+        ext_on    = self._settings.get("extension_enabled", True)
+        remote_on = self._settings.get("remote_enabled", False)
+
+        if remote_on and not (self._settings.get("remote_username") and
+                              self._settings.get("remote_password_hash")):
+            print("[remote] Skipping remote HTTPS server — username or password not configured")
+            remote_on = False
+
+        if ext_on or remote_on:
+            self._remote_server = remote_server.RemoteServer(self, self._settings)
+            ok = self._remote_server.start()
+            if not ok:
+                self._remote_server = None
 
         # ── Client auto-connect ───────────────────────────────────────────────
         if self._settings.get("remote_client_autoconnect", False):

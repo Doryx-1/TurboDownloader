@@ -113,6 +113,7 @@ def load_settings() -> dict:
         "extensions":    DEFAULT_EXTENSIONS.copy(),
         "all_files":     False,
         # ── Remote control ─────────────────────
+        "extension_enabled":    True,
         "remote_enabled":       False,
         "remote_port":          9989,
         "remote_username":      "",
@@ -612,6 +613,15 @@ class SettingsPopup(ctk.CTkToplevel):
         self._section(content, "Remote control",
                       "Server: expose this instance over HTTPS.   "
                       "Client: control a remote TurboDownloader instance.")
+
+        # ── Browser extension toggle ──────────────────────────────────────────
+        ext_row = ctk.CTkFrame(content, fg_color="#1e1e1e", corner_radius=8)
+        ext_row.pack(fill="x", padx=20, pady=(0, 10))
+        self._ext_enabled_var = ctk.BooleanVar(
+            value=self._settings.get("extension_enabled", True))
+        ctk.CTkSwitch(ext_row, text="Browser extension listener  (HTTP · 127.0.0.1:9988 · restart to change)",
+                      variable=self._ext_enabled_var).pack(
+                          side="left", padx=14, pady=10)
 
         # ── Two-column card container ─────────────────────────────────────────
         cards = ctk.CTkFrame(content, fg_color="transparent")
@@ -1297,6 +1307,8 @@ class SettingsPopup(ctk.CTkToplevel):
         self._settings["all_files"] = self._all_files_var.get()
 
         # ── Remote control ─────────────────────────────────────────────
+        if getattr(self, "_ext_enabled_var", None):
+            self._settings["extension_enabled"] = self._ext_enabled_var.get()
         self._settings["remote_enabled"] = self._remote_enabled_var.get()
         try:
             from remote_server import LOCAL_EXT_PORT as _EXT_PORT

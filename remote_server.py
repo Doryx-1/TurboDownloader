@@ -364,23 +364,24 @@ class RemoteServer:
             }
 
             # ── Server 1: HTTP, localhost only, for browser extension ─────────
-            local_cfg = uvicorn.Config(
-                app=fastapi_app,
-                host="127.0.0.1",
-                port=LOCAL_EXT_PORT,
-                log_config=UVICORN_LOG_CONFIG,
-                loop="asyncio",
-                access_log=False,
-            )
-            self._local_server = uvicorn.Server(local_cfg)
-            self._local_thread = threading.Thread(
-                target=self._local_server.run,
-                daemon=True,
-                name="TurboLocalServer",
-            )
-            self._local_thread.start()
+            if self._settings.get("extension_enabled", True):
+                local_cfg = uvicorn.Config(
+                    app=fastapi_app,
+                    host="127.0.0.1",
+                    port=LOCAL_EXT_PORT,
+                    log_config=UVICORN_LOG_CONFIG,
+                    loop="asyncio",
+                    access_log=False,
+                )
+                self._local_server = uvicorn.Server(local_cfg)
+                self._local_thread = threading.Thread(
+                    target=self._local_server.run,
+                    daemon=True,
+                    name="TurboLocalServer",
+                )
+                self._local_thread.start()
+                print(f"[remote] Extension server started on http://127.0.0.1:{LOCAL_EXT_PORT}")
             self._running = True
-            print(f"[remote] Extension server started on http://127.0.0.1:{LOCAL_EXT_PORT}")
 
             # ── Server 2: HTTPS, all interfaces, for remote TD clients ────────
             if self._settings.get("remote_enabled", False):
