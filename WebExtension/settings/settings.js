@@ -51,22 +51,14 @@
     text.textContent = "Checking…";
     try {
       const result = await chrome.runtime.sendMessage({ type: "TEST_CONNECTION" });
-      const hint = document.getElementById("cert-hint");
-      const certLink = document.getElementById("cert-link");
       if (result?.ok) {
         dot.className    = "status-dot ok";
         text.textContent = "Connected to TurboDownloader ✓";
         sub.textContent  = "Ready to receive downloads";
-        hint.style.display = "none";
       } else {
         dot.className    = "status-dot err";
         text.textContent = "TurboDownloader not reachable";
         sub.textContent  = result?.error || "Make sure TurboDownloader is running";
-        hint.style.display = "block";
-        certLink.addEventListener("click", e => {
-          e.preventDefault();
-          chrome.tabs.create({ url: "https://127.0.0.1:9988" });
-        }, { once: true });
       }
     } catch (e) {
       dot.className    = "status-dot err";

@@ -5,10 +5,9 @@
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-// HTTPS is required — the server uses a self-signed certificate.
-// If the extension cannot connect, open https://127.0.0.1:9988 in Chrome once
-// and click "Advanced → Proceed" to trust the certificate permanently.
-const TD_HOST        = "https://127.0.0.1:9988";
+// HTTP is used for local connections — safe on loopback, no cert trust required.
+// The local token exchange (no credentials in transit) provides authentication.
+const TD_HOST        = "http://127.0.0.1:9988";
 const TOKEN_MARGIN_MS = 5 * 60 * 1000;  // renew 5 min before expiry
 
 // ── Default settings ──────────────────────────────────────────────────────────

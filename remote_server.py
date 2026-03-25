@@ -332,7 +332,7 @@ class RemoteServer:
             return False
 
         port      = int(self._settings.get("remote_port", DEFAULT_PORT))
-        use_ssl   = True    # HTTPS — self-signed cert (must be trusted once in browser)
+        use_ssl   = bool(self._settings.get("remote_use_ssl", False))
 
         if use_ssl:
             ssl_ok = ensure_ssl_cert()
@@ -871,7 +871,9 @@ class RemoteClient:
     _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
     def __init__(self, host: str, port: int, username: str, password: str):
-        self._base    = f"https://{host}:{port}"
+        is_loopback   = host.lower() in self._LOOPBACK
+        proto         = "http" if is_loopback else "https"
+        self._base    = f"{proto}://{host}:{port}"
         self._host    = host
         self._port    = port
         self._verify  = False
