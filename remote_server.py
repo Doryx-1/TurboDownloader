@@ -151,6 +151,7 @@ def _generate_self_signed_cert() -> bool:
                 "-days",   "3650",
                 "-nodes",
                 "-subj",   "/CN=TurboDownloader",
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
             ], check=True, capture_output=True, timeout=30)
             print("[remote] Self-signed cert generated via openssl CLI ✓")
             return True
@@ -161,10 +162,26 @@ def _generate_self_signed_cert() -> bool:
     return False
 
 
+def _cert_has_san() -> bool:
+    """Returns True if the existing cert has IP:127.0.0.1 in its SANs."""
+    try:
+        from cryptography import x509
+        cert = x509.load_pem_x509_certificate(CERT_FILE.read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        import ipaddress
+        return ipaddress.IPv4Address("127.0.0.1") in san.value.get_values_for_type(x509.IPAddress)
+    except Exception:
+        return False
+
+
 def ensure_ssl_cert() -> bool:
-    """Makes sure cert+key exist. Generates them if not. Returns True if ready."""
+    """Makes sure cert+key exist with proper SANs. Regenerates if outdated."""
     if CERT_FILE.exists() and KEY_FILE.exists():
-        return True
+        if _cert_has_san():
+            return True
+        _log.info("Existing cert missing SAN — regenerating for browser compatibility")
+        CERT_FILE.unlink(missing_ok=True)
+        KEY_FILE.unlink(missing_ok=True)
     return _generate_self_signed_cert()
 
 
