@@ -243,6 +243,8 @@ class RemoteTrackerMixin:
                         shadow["state"]      = state
                         shadow["server_idx"] = server_idx
 
+                        print(f"[tracker] server_idx={server_idx} state={state!r} shadow_idx={shadow_idx}")
+
                         # ── Conflict: show popup on client, send decision back ─
                         if state == "conflict":
                             if shadow_idx not in conflict_asking:
@@ -295,6 +297,7 @@ class RemoteTrackerMixin:
                         if is_final:
                             server_to_shadow.pop(server_idx, None)
 
+                    print(f"[tracker] pending_updates count={len(pending_updates)}: {[(u[1],u[8]) for u in pending_updates]}")
                     if pending_updates:
                         def _batch_update(updates=pending_updates):
                             for (r, l, c, p, sp, fn, final, paused, si, srv) in updates:
