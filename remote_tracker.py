@@ -256,7 +256,6 @@ class RemoteTrackerMixin:
                                         action = self._ask_file_exists_popup(_FakeItem())
                                     except Exception:
                                         action = "replace"
-                                    conflict_asking.discard(shid)
                                     _th.Thread(
                                         target=lambda: cl.resolve_conflict(si, action),
                                         daemon=True,
@@ -270,6 +269,9 @@ class RemoteTrackerMixin:
                                 False, False, shadow_idx, server_idx
                             ))
                             continue
+
+                        # State left "conflict" → allow popup again if it comes back
+                        conflict_asking.discard(shadow_idx)
 
                         state_map = {
                             "downloading": ("📡 Downloading", "#2e8b57"),

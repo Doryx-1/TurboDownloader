@@ -297,10 +297,7 @@ class RowManagerMixin:
             else:
                 menu.add_command(label="✕  Effacer la ligne", state="disabled")
 
-            try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
+            menu.tk_popup(event.x_root, event.y_root)
 
         return handler
 
