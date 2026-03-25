@@ -380,6 +380,10 @@ class RemoteServer:
             # ── Server 2: HTTPS, all interfaces, for remote TD clients ────────
             if self._settings.get("remote_enable_external", False):
                 remote_port = int(self._settings.get("remote_port", DEFAULT_PORT))
+                if remote_port == LOCAL_EXT_PORT:
+                    _log.warning("Remote port %d is reserved for the browser extension — using %d instead",
+                                 LOCAL_EXT_PORT, DEFAULT_PORT)
+                    remote_port = DEFAULT_PORT
                 ssl_ok = ensure_ssl_cert()
                 if not ssl_ok:
                     _log.warning("HTTPS cert generation failed — remote access disabled")

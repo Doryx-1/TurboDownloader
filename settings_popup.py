@@ -714,10 +714,6 @@ class SettingsPopup(ctk.CTkToplevel):
         self._rclient_port_e = ctk.CTkEntry(rc, width=58)
         self._rclient_port_e.insert(0, str(self._settings.get("remote_client_port", 9989)))
         self._rclient_port_e.pack(side="left")
-        self._rclient_ssl_var = ctk.BooleanVar(
-            value=self._settings.get("remote_client_use_ssl", False))
-        ctk.CTkCheckBox(rc, text="HTTPS", variable=self._rclient_ssl_var,
-                        font=ctk.CTkFont(size=11), width=20).pack(side="left", padx=(10, 0))
 
         # ── Username ──────────────────────────────────────────────────────────
         rc3 = ctk.CTkFrame(p, fg_color="transparent")
@@ -955,10 +951,9 @@ class SettingsPopup(ctk.CTkToplevel):
             text="⏳ Connecting…", text_color="#888888")
         self.update()
 
-        use_ssl = getattr(self, "_rclient_ssl_var", None) and self._rclient_ssl_var.get()
         try:
             from remote_server import RemoteClient
-            c = RemoteClient(host, port, user, pwd, use_ssl=bool(use_ssl))
+            c = RemoteClient(host, port, user, pwd)
             ok, msg = c.connect()
         except ImportError:
             self._rclient_status_lbl.configure(
@@ -971,7 +966,7 @@ class SettingsPopup(ctk.CTkToplevel):
             self._settings["remote_client_port"]    = port
             self._settings["remote_client_user"]    = user
             self._settings["remote_client_dest"]    = self._rclient_dest_e.get().strip()
-            self._settings["remote_client_use_ssl"] = bool(use_ssl)
+
             # Save password if option enabled
             if getattr(self, "_rclient_savepwd_var", None) and self._rclient_savepwd_var.get():
                 self._settings["remote_client_password"] = _encrypt_password(pwd)
@@ -1079,7 +1074,7 @@ class SettingsPopup(ctk.CTkToplevel):
             _t.sleep(interval)   # give the server time to start its download
             while _t.time() < deadline:
                 try:
-                    c2 = RemoteClient(host, port, user, pwd, use_ssl=bool(use_ssl))
+                    c2 = RemoteClient(host, port, user, pwd)
                     ok, msg = c2.connect()
                     if ok:
                         def _apply():
@@ -1260,8 +1255,15 @@ class SettingsPopup(ctk.CTkToplevel):
         # ── Remote control ─────────────────────────────────────────────
         self._settings["remote_enabled"] = self._remote_enabled_var.get()
         try:
+            from remote_server import LOCAL_EXT_PORT as _EXT_PORT
+        except ImportError:
+            _EXT_PORT = 9988
+        try:
             port = int(self._remote_port_e.get().strip() or "9989")
-            self._settings["remote_port"] = max(1024, min(65535, port))
+            port = max(1024, min(65535, port))
+            if port == _EXT_PORT:
+                port = 9989   # silently bump — 9988 is reserved for the extension
+            self._settings["remote_port"] = port
         except (ValueError, AttributeError):
             self._settings["remote_port"] = 9989
 
