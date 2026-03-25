@@ -262,7 +262,7 @@ class DownloadEngineMixin:
 
     # ── File-exists handling ─────────────────────────────────────────────────
 
-    def _check_file_exists(self, it) -> str:
+    def _check_file_exists(self, it, idx=None) -> str:
         """
         Returns: 'resume' | 'replace' | 'skip' | 'rename'
         Called from worker thread — uses ui_call for the popup.
@@ -283,8 +283,9 @@ class DownloadEngineMixin:
                 it.conflict_event  = _thr.Event()
                 it.conflict_action = ""
                 it.state = "conflict"
-                self.ui(self._update_row_ui, idx)
-                self.ui(self._refresh_filter_counts)
+                if idx is not None:
+                    self.ui(self._update_row_ui, idx)
+                    self.ui(self._refresh_filter_counts)
                 # Wait up to 60 s for client to respond, then default to replace
                 it.conflict_event.wait(timeout=60)
                 it.state = "downloading"
@@ -478,7 +479,7 @@ class DownloadEngineMixin:
             self.ui(self._refresh_filter_counts)
 
             # ── File-exists check ─────────────────────────────────────────────
-            exists_action = self._check_file_exists(it)
+            exists_action = self._check_file_exists(it, idx)
             if exists_action == "skip":
                 it.state = "skipped"
                 self.ui(self._update_row_ui, idx)

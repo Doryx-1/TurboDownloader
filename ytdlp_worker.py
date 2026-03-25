@@ -278,7 +278,7 @@ def run(idx: int, app) -> None:
     # We only check if the exact dest_path already exists as a complete file.
     # Note: yt-dlp manages its own temp files so we skip .part check here.
     if os.path.exists(it.dest_path):
-        exists_action = app._check_file_exists(it)
+        exists_action = app._check_file_exists(it, idx)
         if exists_action == "skip":
             it.state = "skipped"
             app.ui(app._update_row_ui, idx)

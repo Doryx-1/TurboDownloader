@@ -243,7 +243,6 @@ class RemoteTrackerMixin:
                         shadow["state"]      = state
                         shadow["server_idx"] = server_idx
 
-                        print(f"[tracker] server_idx={server_idx} state={state!r} shadow_idx={shadow_idx}")
 
                         # ── Conflict: show popup on client, send decision back ─
                         if state == "conflict":
@@ -258,11 +257,10 @@ class RemoteTrackerMixin:
                                         action = self._ask_file_exists_popup(_FakeItem())
                                     except Exception:
                                         action = "replace"
-                                    def _resolve(s=si, a=action, c=cl):
-                                        print(f"[conflict] calling resolve_conflict(idx={s}, action={a!r})")
-                                        result = c.resolve_conflict(s, a)
-                                        print(f"[conflict] resolve_conflict result: {result}")
-                                    _th.Thread(target=_resolve, daemon=True).start()
+                                    _th.Thread(
+                                        target=lambda s=si, a=action, c=cl: c.resolve_conflict(s, a),
+                                        daemon=True,
+                                    ).start()
                                 self.ui(_ask)
                             # Show "waiting for decision" in the row
                             pending_updates.append((
@@ -297,7 +295,6 @@ class RemoteTrackerMixin:
                         if is_final:
                             server_to_shadow.pop(server_idx, None)
 
-                    print(f"[tracker] pending_updates count={len(pending_updates)}: {[(u[1],u[8]) for u in pending_updates]}")
                     if pending_updates:
                         def _batch_update(updates=pending_updates):
                             for (r, l, c, p, sp, fn, final, paused, si, srv) in updates:
