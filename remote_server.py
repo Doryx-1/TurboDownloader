@@ -378,7 +378,7 @@ class RemoteServer:
             print(f"[remote] Extension server started on http://127.0.0.1:{LOCAL_EXT_PORT}")
 
             # ── Server 2: HTTPS, all interfaces, for remote TD clients ────────
-            if self._settings.get("remote_enable_external", False):
+            if self._settings.get("remote_enabled", False):
                 remote_port = int(self._settings.get("remote_port", DEFAULT_PORT))
                 if remote_port == LOCAL_EXT_PORT:
                     _log.warning("Remote port %d is reserved for the browser extension — using %d instead",
