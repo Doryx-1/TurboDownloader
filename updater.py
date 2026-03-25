@@ -334,7 +334,7 @@ def _install_silent(setup_path: pathlib.Path, app):
         DETACHED  = 0x00000008
         NEW_GROUP = 0x00000200
         subprocess.Popen(
-            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"],
             creationflags=DETACHED | NEW_GROUP,
             close_fds=True,
         )
@@ -344,24 +344,16 @@ def _install_silent(setup_path: pathlib.Path, app):
 
 
 def _install(setup_path: pathlib.Path, popup, app):
-    """Launches the installer and quits TurboDownloader."""
+    """Launches the installer silently and quits TurboDownloader."""
     try:
         popup.destroy()
-        # os.startfile is the most reliable way to launch an exe on Windows
-        # independently of the parent process — equivalent to double-clicking
-        os.startfile(str(setup_path))
+        DETACHED  = 0x00000008
+        NEW_GROUP = 0x00000200
+        subprocess.Popen(
+            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"],
+            creationflags=DETACHED | NEW_GROUP,
+            close_fds=True,
+        )
         app.after(800, app._tray_quit)
     except Exception as e:
         _log.error("Install launch failed: %s", e)
-        # Fallback: try subprocess with full detach flags
-        try:
-            DETACHED = 0x00000008   # DETACH_PROCESS
-            NEW_GROUP = 0x00000200  # CREATE_NEW_PROCESS_GROUP
-            subprocess.Popen(
-                [str(setup_path)],
-                creationflags=DETACHED | NEW_GROUP,
-                close_fds=True,
-            )
-            app.after(800, app._tray_quit)
-        except Exception as e2:
-            _log.error("Fallback install also failed: %s", e2)
