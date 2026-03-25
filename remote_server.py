@@ -854,7 +854,7 @@ class RemoteClient:
     _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
     def __init__(self, host: str, port: int, username: str, password: str):
-        self._base    = f"http://{host}:{port}"
+        self._base    = f"https://{host}:{port}"
         self._host    = host
         self._port    = port
         self._verify  = False
