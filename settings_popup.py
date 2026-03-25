@@ -1051,7 +1051,10 @@ class SettingsPopup(ctk.CTkToplevel):
             status = client.trigger_remote_update(username=user, password=pwd)
             if status == "update_started":
                 self._rclient_status_lbl.configure(
-                    text="⏳ Mise à jour lancée sur le serveur…", text_color="#f0a500")
+                    text="⏳ MAJ lancée — reconnexion automatique…", text_color="#f0a500")
+                import threading as _th
+                _th.Thread(target=_poll_server_update, daemon=True,
+                           name="ServerUpdatePoller").start()
             elif status == "already_up_to_date":
                 self._rclient_status_lbl.configure(
                     text="ℹ Serveur déjà à la dernière version", text_color="#888888")
@@ -1061,6 +1064,41 @@ class SettingsPopup(ctk.CTkToplevel):
             else:
                 self._rclient_status_lbl.configure(
                     text="✗ Impossible de déclencher la MAJ serveur", text_color="#cc4444")
+
+        def _poll_server_update(timeout=180, interval=12):
+            """Background thread: waits for server to restart after update, then auto-connects."""
+            import time as _t
+            from remote_server import RemoteClient
+            deadline = _t.time() + timeout
+            _t.sleep(interval)   # give the server time to start its download
+            while _t.time() < deadline:
+                try:
+                    c2 = RemoteClient(host, port, user, pwd)
+                    ok, msg = c2.connect()
+                    if ok:
+                        def _apply():
+                            self.master._remote_client = c2
+                            self._settings["remote_client_host"] = host
+                            self._settings["remote_client_port"] = port
+                            self._settings["remote_client_user"] = user
+                            self.master._update_remote_status_bar()
+                            self.master._start_remote_dl_tracker()
+                            if self.winfo_exists():
+                                self._rclient_status_lbl.configure(
+                                    text=f"Connecté à {host}:{port}", text_color="#44cc44")
+                        self.master.ui(_apply)
+                        return
+                    # Version still mismatched or other error — keep waiting silently
+                except Exception:
+                    pass
+                _t.sleep(interval)
+            # Timeout — let the user reconnect manually
+            def _timeout():
+                if self.winfo_exists():
+                    self._rclient_status_lbl.configure(
+                        text="✗ Timeout — reconnectez manuellement après la MAJ",
+                        text_color="#cc4444")
+            self.master.ui(_timeout)
 
         def _update_client():
             popup.destroy()

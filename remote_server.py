@@ -1063,12 +1063,15 @@ class RemoteClient:
             return "error"
         try:
             body    = {}
+            params  = {}
             headers = self._headers if self._ok else {"Content-Type": "application/json"}
             if not self._ok and username and password:
-                body = {"username": username, "password": password}
+                # Send in body (v2.7.5+) AND query params (v2.7.4 compat)
+                body   = {"username": username, "password": password}
+                params = {"username": username, "password": password}
             r = self._httpx.post(
                 f"{self._base}/admin/trigger-update",
-                headers=headers, json=body,
+                headers=headers, json=body, params=params,
                 verify=False, timeout=15,
             )
             if r.status_code == 200:
