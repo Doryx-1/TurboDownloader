@@ -256,10 +256,11 @@ class RemoteTrackerMixin:
                                         action = self._ask_file_exists_popup(_FakeItem())
                                     except Exception:
                                         action = "replace"
-                                    _th.Thread(
-                                        target=lambda: cl.resolve_conflict(si, action),
-                                        daemon=True,
-                                    ).start()
+                                    def _resolve(s=si, a=action, c=cl):
+                                        print(f"[conflict] calling resolve_conflict(idx={s}, action={a!r})")
+                                        result = c.resolve_conflict(s, a)
+                                        print(f"[conflict] resolve_conflict result: {result}")
+                                    _th.Thread(target=_resolve, daemon=True).start()
                                 self.ui(_ask)
                             # Show "waiting for decision" in the row
                             pending_updates.append((

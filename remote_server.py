@@ -659,13 +659,21 @@ class RemoteServer:
         def resolve_conflict(idx: int, req: ConflictRequest = Body(...),
                              _ = Depends(require_auth)):
             """Client sends back the user's file-conflict decision."""
+            print(f"[conflict] resolve-conflict endpoint called: idx={idx}, action={req.action!r}")
             it = app_ref.items.get(idx)
-            if it is None or it.state != "conflict":
+            if it is None:
+                print(f"[conflict] item {idx} not found, items: {list(app_ref.items.keys())}")
+                raise HTTPException(status_code=404, detail="No pending conflict")
+            if it.state != "conflict":
+                print(f"[conflict] item {idx} state={it.state!r} (not conflict)")
                 raise HTTPException(status_code=404, detail="No pending conflict")
             action = req.action if req.action in ("replace", "skip", "rename") else "replace"
             it.conflict_action = action
             if it.conflict_event:
                 it.conflict_event.set()
+                print(f"[conflict] event set for idx={idx}, action={action!r}")
+            else:
+                print(f"[conflict] conflict_event is None for idx={idx}!")
             return {"ok": True, "action": action}
 
         @api.post("/downloads/add")
