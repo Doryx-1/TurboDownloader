@@ -1482,6 +1482,9 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             fg_color="#1f6aa5", state="disabled",
             command=self._confirm_selection)
         self._select_btn.pack(side="left", padx=12, pady=8)
+        ctk.CTkButton(foot, text="📁 New folder", width=120,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._mkdir).pack(side="left", padx=(0, 8), pady=8)
         ctk.CTkButton(foot, text="Cancel", width=100,
                       fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=12, pady=8)
@@ -1753,6 +1756,33 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         self._dest_lbl.configure(text="No folder selected", text_color="#555555")
         self._dest_frame.configure(fg_color="#0d1a0d")
         self._select_btn.configure(state="disabled")
+
+    def _mkdir(self):
+        """Create a new subfolder in the current directory."""
+        if not self._current:
+            return
+        import customtkinter as _ctk
+        dialog = _ctk.CTkInputDialog(text="Folder name:", title="New folder")
+        name = dialog.get_input()
+        if not name:
+            return
+        name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
+        if not name:
+            return
+        if self._mode == "remote":
+            import os as _os
+            sep = "/" if "/" in self._current else "\\"
+            new_path = self._current.rstrip("/\\") + sep + name
+            result = self._client.mkdir(new_path)
+            if result and result.get("ok"):
+                self._navigate(self._current)
+        else:
+            import os as _os
+            try:
+                _os.makedirs(_os.path.join(self._current, name), exist_ok=True)
+                self._navigate_local_tree(self._current, self._fetch_gen + 1)
+            except Exception:
+                pass
 
     def _confirm_selection(self):
         path = self._current

@@ -848,6 +848,20 @@ class RemoteServer:
 
             return {"path": path, "parent": parent, "entries": entries}
 
+        @api.post("/mkdir")
+        def make_directory(path: str = Body(..., embed=True),
+                           _ = Depends(require_auth)):
+            """Creates a directory on the server filesystem."""
+            import os as _os
+            path = _os.path.abspath(path)
+            try:
+                _os.makedirs(path, exist_ok=True)
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return {"ok": True, "path": path}
+
         @api.get("/dest_history")
         def dest_history(_ = Depends(require_auth)):
             """Returns the last used destination folders from history."""
@@ -1077,6 +1091,10 @@ class RemoteClient:
     def browse(self, path: str = "") -> Optional[dict]:
         """Returns folder contents from the server filesystem."""
         return self._get(f"/browse?path={path}")
+
+    def mkdir(self, path: str) -> Optional[dict]:
+        """Creates a directory on the server filesystem."""
+        return self._post("/mkdir", {"path": path})
 
     def pause(self, idx: int) -> Optional[dict]:
         return self._post(f"/downloads/{idx}/pause")
