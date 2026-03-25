@@ -12,6 +12,7 @@ it breaks Pydantic v2 model resolution (ForwardRef issue with Python 3.14).
 """
 
 import json
+import os
 import ssl
 import hashlib
 import pathlib
@@ -60,6 +61,10 @@ try:
     class TriggerUpdateRequest(BaseModel):
         username: Optional[str] = None
         password: Optional[str] = None
+        model_config = {"extra": "ignore"}
+
+    class ConflictRequest(BaseModel):
+        action: str   # "replace" | "skip" | "rename"
         model_config = {"extra": "ignore"}
 
 except ImportError:
@@ -388,8 +393,9 @@ class RemoteServer:
                 if not ssl_ok:
                     _log.warning("HTTPS cert generation failed — remote access disabled")
                 else:
+                    remote_app = self._build_fastapi_app()   # separate instance to avoid shared-state issues
                     remote_cfg = uvicorn.Config(
-                        app=fastapi_app,
+                        app=remote_app,
                         host="0.0.0.0",
                         port=remote_port,
                         log_config=UVICORN_LOG_CONFIG,
@@ -399,8 +405,18 @@ class RemoteServer:
                         ssl_keyfile=str(KEY_FILE),
                     )
                     self._remote_server = uvicorn.Server(remote_cfg)
+
+                    def _run_https():
+                        try:
+                            import asyncio as _asyncio
+                            _asyncio.set_event_loop(_asyncio.new_event_loop())
+                            self._remote_server.run()
+                        except Exception as _e:
+                            import traceback as _tb
+                            print(f"[remote] HTTPS server CRASHED: {_e}\n{_tb.format_exc()}")
+
                     self._remote_thread = threading.Thread(
-                        target=self._remote_server.run,
+                        target=_run_https,
                         daemon=True,
                         name="TurboRemoteServer",
                     )
@@ -491,15 +507,16 @@ class RemoteServer:
             window = [(t, b) for t, b in it.speed_window if now - t <= 3]
             speed  = sum(b for _, b in window) / 3 if window else 0
             return {
-                "idx":       idx,
-                "filename":  it.filename,
-                "url":       it.url,
-                "state":     it.state,
-                "progress":  pct,
-                "downloaded": it.downloaded,
-                "total":     total,
-                "speed_bps": int(speed),
-                "error":     it.error_msg,
+                "idx":              idx,
+                "filename":         it.filename,
+                "url":              it.url,
+                "state":            it.state,
+                "progress":         pct,
+                "downloaded":       it.downloaded,
+                "total":            total,
+                "speed_bps":        int(speed),
+                "error":            it.error_msg,
+                "conflict_filename": os.path.basename(it.dest_path) if it.state == "conflict" else "",
             }
 
         # ── Endpoints ─────────────────────────────────────────────────────────
@@ -637,6 +654,19 @@ class RemoteServer:
             if not d:
                 raise HTTPException(status_code=404, detail="Not found")
             return d
+
+        @api.post("/downloads/{idx}/resolve-conflict")
+        def resolve_conflict(idx: int, req: ConflictRequest = Body(...),
+                             _ = Depends(require_auth)):
+            """Client sends back the user's file-conflict decision."""
+            it = app_ref.items.get(idx)
+            if it is None or it.state != "conflict":
+                raise HTTPException(status_code=404, detail="No pending conflict")
+            action = req.action if req.action in ("replace", "skip", "rename") else "replace"
+            it.conflict_action = action
+            if it.conflict_event:
+                it.conflict_event.set()
+            return {"ok": True, "action": action}
 
         @api.post("/downloads/add")
         def add_download(req: AddURLRequest = Body(...), _ = Depends(require_auth)):
@@ -1059,6 +1089,9 @@ class RemoteClient:
 
     def remove(self, idx: int) -> Optional[dict]:
         return self._post(f"/downloads/{idx}/remove")
+
+    def resolve_conflict(self, idx: int, action: str) -> Optional[dict]:
+        return self._post(f"/downloads/{idx}/resolve-conflict", {"action": action})
 
     def clear_done(self) -> Optional[dict]:
         return self._post("/downloads/clear_done")

@@ -38,7 +38,7 @@ class RemoteTrackerMixin:
         # ── Client auto-connect ───────────────────────────────────────────────
         if self._settings.get("remote_client_autoconnect", False):
             host = self._settings.get("remote_client_host", "")
-            port = int(self._settings.get("remote_client_port", 9988))
+            port = int(self._settings.get("remote_client_port", 9989))
             user = self._settings.get("remote_client_user", "")
             try:
                 from settings_popup import _decrypt_password
@@ -149,6 +149,10 @@ class RemoteTrackerMixin:
 
         def _tracker():
             server_to_shadow: dict = {}
+            # consecutive polls a server_idx hasn't appeared → cleanup stuck rows
+            missing_polls:    dict = {}   # server_idx → count
+            # shadow_idxs currently showing conflict popup (don't re-trigger)
+            conflict_asking:  set  = set()
 
             while True:
                 _t.sleep(2)
@@ -160,7 +164,35 @@ class RemoteTrackerMixin:
                     if not data:
                         continue
 
-                    downloads = data.get("downloads", [])
+                    downloads      = data.get("downloads", [])
+                    seen_server_idxs = {dl.get("idx") for dl in downloads
+                                        if dl.get("idx") is not None}
+
+                    # ── Cleanup stuck rows whose server_idx disappeared ────────
+                    for srv_idx in list(server_to_shadow.keys()):
+                        if srv_idx not in seen_server_idxs:
+                            missing_polls[srv_idx] = missing_polls.get(srv_idx, 0) + 1
+                            if missing_polls[srv_idx] >= 3:
+                                s_idx = server_to_shadow.pop(srv_idx, None)
+                                missing_polls.pop(srv_idx, None)
+                                conflict_asking.discard(s_idx)
+                                shadow = self._shadow_rows.get(s_idx)
+                                if shadow and shadow.get("state") not in (
+                                        "done", "error", "canceled", "skipped"):
+                                    def _mark_done(r=shadow["row"], si=s_idx):
+                                        if si not in self._shadow_rows:
+                                            return
+                                        self._shadow_rows[si]["state"] = "done"
+                                        r.status.configure(
+                                            text="📡 Done ✓", text_color="#2e6b3e")
+                                        r.progress.set(1.0)
+                                        r.pause_btn.configure(state="disabled")
+                                        r.cancel_btn.configure(state="disabled")
+                                        r.remove_btn.configure(state="normal")
+                                        self._sort_shadow_rows()
+                                    self.ui(_mark_done)
+                        else:
+                            missing_polls.pop(srv_idx, None)
 
                     # Collect all row updates, apply in a single UI call
                     pending_updates = []
@@ -173,6 +205,7 @@ class RemoteTrackerMixin:
                         pct        = dl.get("progress", 0) / 100
                         speed      = dl.get("speed_bps", 0)
                         err        = dl.get("error", "")
+                        conflict_f = dl.get("conflict_filename", "")
 
                         if server_idx is None:
                             continue
@@ -196,7 +229,7 @@ class RemoteTrackerMixin:
                                     server_to_shadow[si] = shadow_idx
                                     ev.set()
                                 self.ui(_create)
-                                ev.wait(timeout=1.0)
+                                ev.wait(timeout=1.5)
                                 continue
 
                         shadow_idx = server_to_shadow.get(server_idx)
@@ -210,17 +243,46 @@ class RemoteTrackerMixin:
                         shadow["state"]      = state
                         shadow["server_idx"] = server_idx
 
+                        # ── Conflict: show popup on client, send decision back ─
+                        if state == "conflict":
+                            if shadow_idx not in conflict_asking:
+                                conflict_asking.add(shadow_idx)
+                                def _ask(si=server_idx, shid=shadow_idx, cf=conflict_f,
+                                         cl=client):
+                                    import os as _os
+                                    class _FakeItem:
+                                        dest_path = cf
+                                    try:
+                                        action = self._ask_file_exists_popup(_FakeItem())
+                                    except Exception:
+                                        action = "replace"
+                                    conflict_asking.discard(shid)
+                                    _th.Thread(
+                                        target=lambda: cl.resolve_conflict(si, action),
+                                        daemon=True,
+                                    ).start()
+                                self.ui(_ask)
+                            # Show "waiting for decision" in the row
+                            pending_updates.append((
+                                shadow["row"],
+                                "📡 File exists — waiting for your decision…",
+                                "#cc8800", pct, speed, fname,
+                                False, False, shadow_idx, server_idx
+                            ))
+                            continue
+
                         state_map = {
                             "downloading": ("📡 Downloading", "#2e8b57"),
                             "waiting":     ("📡 Waiting",     "#666666"),
                             "paused":      ("📡 Paused",      "#5a7a9a"),
                             "moving":      ("📡 Converting…", "#888800"),
                             "done":        ("📡 Done ✓",      "#2e6b3e"),
+                            "skipped":     ("📡 Skipped",     "#555555"),
                             "error":       (f"📡 Error: {err[:30]}", "#8B0000"),
                             "canceled":    ("📡 Canceled",    "#555555"),
                         }
                         lbl, color = state_map.get(state, (f"📡 {state}", "#888888"))
-                        is_final  = state in ("done", "error", "canceled")
+                        is_final  = state in ("done", "error", "canceled", "skipped")
                         is_paused = state == "paused"
 
                         pending_updates.append((
@@ -266,7 +328,7 @@ class RemoteTrackerMixin:
         Only re-packs widgets when the order has actually changed (dirty flag).
         """
         shadows = self._shadow_rows
-        if len(shadows) < 2:
+        if not shadows:
             return
         PRIORITY = {"downloading": 0, "waiting": 1, "paused": 2,
                     "moving": 3, "done": 4, "canceled": 5, "error": 6}

@@ -277,6 +277,18 @@ class DownloadEngineMixin:
         # Final file exists — apply configured action
         action = self._settings.get("file_exists_action", "ask")
         if action == "ask":
+            if getattr(it, "from_remote", False):
+                # Can't show popup on server — signal client and wait for its answer
+                import threading as _thr
+                it.conflict_event  = _thr.Event()
+                it.conflict_action = ""
+                it.state = "conflict"
+                self.ui(self._update_row_ui, idx)
+                self.ui(self._refresh_filter_counts)
+                # Wait up to 60 s for client to respond, then default to replace
+                it.conflict_event.wait(timeout=60)
+                it.state = "downloading"
+                return it.conflict_action or "replace"
             try:
                 return self.ui_call(self._ask_file_exists_popup, it)
             except Exception:
@@ -463,6 +475,7 @@ class DownloadEngineMixin:
             it.started_at = time.time()
             it.error_msg  = ""
             self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
 
             # ── File-exists check ─────────────────────────────────────────────
             exists_action = self._check_file_exists(it)

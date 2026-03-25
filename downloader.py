@@ -777,6 +777,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             "error":       f"Erreur: {it.error_msg[:40]}",
             "canceled":    "Canceled",
             "skipped":     "Already exists (skipped)",
+            "conflict":    "⚠ File exists — client deciding…",
         }
         status_text = state_labels.get(it.state, it.state)
         # Badge Remote si le DL vient d'un client distant
@@ -880,7 +881,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
     def _refresh_filter_counts(self):
         counts = {k: 0 for k in self._filter_btns}
         active_items = list(self.items.values())
-        total = len(active_items)
+        total = len(active_items) + len(self._shadow_rows)
         counts["all"] = total
         for it in active_items:
             if it.state in counts:
@@ -1268,6 +1269,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                     self._add_row_for_item(idx, it)
                     self._update_row_ui(idx)
                 indices_out.append(idx)
+            self._refresh_filter_counts()
             ready_ev.set()
 
         def _run():

@@ -62,6 +62,10 @@ class DownloadItem:
     yt_audio_only: bool          = False  # audio-only extraction mode
     yt_retry:      bool          = False  # True on auto-retry with alternate client
 
+    # Remote duplicate-file resolution
+    conflict_event:  Optional[threading.Event] = None   # set by client's resolve
+    conflict_action: str = ""                           # "replace"|"skip"|"rename"
+
     # Playlist grouping
     playlist_group_id:    Optional[str] = None
     playlist_group_title: Optional[str] = None

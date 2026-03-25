@@ -124,6 +124,7 @@ class RowManagerMixin:
             "server_idx": server_idx,
             "state":      "waiting",
         }
+        row.frame.pack(fill="x", pady=3, padx=4)
         self._refresh_filter_counts()
         return shadow_idx
 
