@@ -56,6 +56,46 @@ DEFAULT_EXTENSIONS = {
 }
 
 
+def _version_tuple(v: str) -> tuple:
+    """Converts a version string like '2.7.6' to a comparable tuple."""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except Exception:
+        return (0, 0, 0)
+
+
+def _migrate_settings(settings: dict) -> bool:
+    """
+    Applies per-version migrations to an existing settings dict (in-place).
+    Returns True if any migration was applied (caller should save).
+    """
+    from updater import APP_VERSION
+
+    stored = settings.get("settings_version", "0.0.0")
+    current = APP_VERSION
+
+    if stored == current:
+        return False
+
+    dirty = False
+
+    # ── 2.7.6 : dual-server split — 9988=HTTP extension, 9989=HTTPS remote ──
+    # Before 2.7.6 the single HTTPS server lived on 9988. After the split,
+    # remote_client_port and remote_port must be 9989.
+    if _version_tuple(stored) < _version_tuple("2.7.6"):
+        if settings.get("remote_client_port") == 9988:
+            settings["remote_client_port"] = 9989
+            print("[settings] migrated remote_client_port 9988 → 9989")
+            dirty = True
+        if settings.get("remote_port") == 9988:
+            settings["remote_port"] = 9989
+            print("[settings] migrated remote_port 9988 → 9989")
+            dirty = True
+
+    settings["settings_version"] = current
+    return dirty or stored != current
+
+
 def load_settings() -> dict:
     """Loads settings from the config file. Returns defaults if not found."""
     defaults = {
@@ -89,12 +129,16 @@ def load_settings() -> dict:
         "remote_client_autoretry":      True,
         # destination history — loaded from dedicated file, not settings.json
         "dest_history":                 [],
+        # migration tracking
+        "settings_version":             "",   # filled at load time by _migrate_settings
     }
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 defaults.update(data)
+                if _migrate_settings(defaults):
+                    save_settings(defaults)
             print(f"[settings] loaded: throttle={defaults.get('throttle')}, retry={defaults.get('retry_max')}")
         except Exception as e:
             print(f"[settings] read error: {e}")

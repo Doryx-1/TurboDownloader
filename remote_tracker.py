@@ -100,7 +100,7 @@ class RemoteTrackerMixin:
 
         # ── Server bar ───────────────────────────────────────────────────────
         if srv_running:
-            port = self._settings.get("remote_port", 9988)
+            port = self._settings.get("remote_port", 9989)
             self._remote_srv_lbl.configure(
                 text=f"📡  Server — listening on :{port}")
             self._remote_srv_bar.pack(fill="x", padx=16, pady=(0, 4))
@@ -110,7 +110,7 @@ class RemoteTrackerMixin:
         # ── Client bar ───────────────────────────────────────────────────────
         if cli_connected:
             host = self._settings.get("remote_client_host", "?")
-            port = self._settings.get("remote_client_port", 9988)
+            port = self._settings.get("remote_client_port", 9989)
             self._remote_cli_lbl.configure(
                 text=f"🔗  Client — connected to {host}:{port}")
             self._remote_cli_bar.pack(fill="x", padx=16, pady=(0, 8))
