@@ -74,14 +74,14 @@ def load_settings() -> dict:
         "all_files":     False,
         # ── Remote control ─────────────────────
         "remote_enabled":       False,
-        "remote_port":          9988,
+        "remote_port":          9989,
         "remote_username":      "",
         "remote_password_hash": "",
         "remote_jwt_secret":    "",
         "remote_jwt_ttl_h":     24,    # JWT token validity: 1 / 8 / 24 / 168h
         # client-side connection info
         "remote_client_host":           "",
-        "remote_client_port":           9988,
+        "remote_client_port":           9989,
         "remote_client_user":           "",
         "remote_client_password":       "",
         "remote_client_save_password":  False,
@@ -611,7 +611,7 @@ class SettingsPopup(ctk.CTkToplevel):
         r.pack(fill="x", padx=14, pady=(0, 4))
         ctk.CTkLabel(r, text="Port:", width=110, anchor="w").pack(side="left")
         self._remote_port_e = ctk.CTkEntry(r, width=70)
-        self._remote_port_e.insert(0, str(self._settings.get("remote_port", 9988)))
+        self._remote_port_e.insert(0, str(self._settings.get("remote_port", 9989)))
         self._remote_port_e.pack(side="left", padx=(0, 6))
         ctk.CTkLabel(r, text="(restart to change)",
                      text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left")
@@ -712,8 +712,12 @@ class SettingsPopup(ctk.CTkToplevel):
         self._rclient_host_e.pack(side="left")
         ctk.CTkLabel(rc, text=":", text_color="gray").pack(side="left", padx=(4, 2))
         self._rclient_port_e = ctk.CTkEntry(rc, width=58)
-        self._rclient_port_e.insert(0, str(self._settings.get("remote_client_port", 9988)))
+        self._rclient_port_e.insert(0, str(self._settings.get("remote_client_port", 9989)))
         self._rclient_port_e.pack(side="left")
+        self._rclient_ssl_var = ctk.BooleanVar(
+            value=self._settings.get("remote_client_use_ssl", False))
+        ctk.CTkCheckBox(rc, text="HTTPS", variable=self._rclient_ssl_var,
+                        font=ctk.CTkFont(size=11), width=20).pack(side="left", padx=(10, 0))
 
         # ── Username ──────────────────────────────────────────────────────────
         rc3 = ctk.CTkFrame(p, fg_color="transparent")
@@ -839,7 +843,7 @@ class SettingsPopup(ctk.CTkToplevel):
             return
         srv = getattr(self.master, "_remote_server", None)
         if srv and srv.is_running:
-            port = self._settings.get("remote_port", 9988)
+            port = self._settings.get("remote_port", 9989)
             self._remote_status_lbl.configure(
                 text=f"🟢 Running on :{port}", text_color="#2e8b57")
         else:
@@ -859,7 +863,7 @@ class SettingsPopup(ctk.CTkToplevel):
             entry.insert(0, profile.get("host", ""))
         for entry in [self._rclient_port_e]:
             entry.delete(0, "end")
-            entry.insert(0, str(profile.get("port", 9988)))
+            entry.insert(0, str(profile.get("port", 9989)))
         for entry in [self._rclient_user_e]:
             entry.delete(0, "end")
             entry.insert(0, profile.get("user", ""))
@@ -882,7 +886,7 @@ class SettingsPopup(ctk.CTkToplevel):
         name = name.strip()
         # Update or add
         existing = next((p for p in self._profiles if p["name"] == name), None)
-        entry = {"name": name, "host": host, "port": int(port or 9988),
+        entry = {"name": name, "host": host, "port": int(port or 9989),
                  "user": user, "password": _encrypt_password(pwd)}
         if existing:
             self._profiles[self._profiles.index(existing)] = entry
@@ -909,7 +913,7 @@ class SettingsPopup(ctk.CTkToplevel):
         connected = client and client.connected
         if connected:
             host = self._settings.get("remote_client_host", "?")
-            port = self._settings.get("remote_client_port", 9988)
+            port = self._settings.get("remote_client_port", 9989)
             self._rclient_status_lbl.configure(
                 text=f"🟢 Connected to {host}:{port}", text_color="#2e8b57")
             self._rclient_btn.configure(text="Disconnect", fg_color="#5a5a5a")
@@ -937,9 +941,9 @@ class SettingsPopup(ctk.CTkToplevel):
         host = self._rclient_host_e.get().strip()
         pwd  = self._rclient_pass_e.get()
         try:
-            port = int(self._rclient_port_e.get().strip() or "9988")
+            port = int(self._rclient_port_e.get().strip() or "9989")
         except ValueError:
-            port = 9988
+            port = 9989
         user = self._rclient_user_e.get().strip()
 
         if not host or not user or not pwd:
@@ -951,9 +955,10 @@ class SettingsPopup(ctk.CTkToplevel):
             text="⏳ Connecting…", text_color="#888888")
         self.update()
 
+        use_ssl = getattr(self, "_rclient_ssl_var", None) and self._rclient_ssl_var.get()
         try:
             from remote_server import RemoteClient
-            c = RemoteClient(host, port, user, pwd)
+            c = RemoteClient(host, port, user, pwd, use_ssl=bool(use_ssl))
             ok, msg = c.connect()
         except ImportError:
             self._rclient_status_lbl.configure(
@@ -962,10 +967,11 @@ class SettingsPopup(ctk.CTkToplevel):
 
         if ok:
             # Save non-sensitive fields
-            self._settings["remote_client_host"] = host
-            self._settings["remote_client_port"] = port
-            self._settings["remote_client_user"] = user
-            self._settings["remote_client_dest"] = self._rclient_dest_e.get().strip()
+            self._settings["remote_client_host"]    = host
+            self._settings["remote_client_port"]    = port
+            self._settings["remote_client_user"]    = user
+            self._settings["remote_client_dest"]    = self._rclient_dest_e.get().strip()
+            self._settings["remote_client_use_ssl"] = bool(use_ssl)
             # Save password if option enabled
             if getattr(self, "_rclient_savepwd_var", None) and self._rclient_savepwd_var.get():
                 self._settings["remote_client_password"] = _encrypt_password(pwd)
@@ -1073,7 +1079,7 @@ class SettingsPopup(ctk.CTkToplevel):
             _t.sleep(interval)   # give the server time to start its download
             while _t.time() < deadline:
                 try:
-                    c2 = RemoteClient(host, port, user, pwd)
+                    c2 = RemoteClient(host, port, user, pwd, use_ssl=bool(use_ssl))
                     ok, msg = c2.connect()
                     if ok:
                         def _apply():
@@ -1254,10 +1260,10 @@ class SettingsPopup(ctk.CTkToplevel):
         # ── Remote control ─────────────────────────────────────────────
         self._settings["remote_enabled"] = self._remote_enabled_var.get()
         try:
-            port = int(self._remote_port_e.get().strip() or "9988")
+            port = int(self._remote_port_e.get().strip() or "9989")
             self._settings["remote_port"] = max(1024, min(65535, port))
         except (ValueError, AttributeError):
-            self._settings["remote_port"] = 9988
+            self._settings["remote_port"] = 9989
 
         user = getattr(self, "_remote_user_e", None)
         if user:
@@ -1285,7 +1291,7 @@ class SettingsPopup(ctk.CTkToplevel):
             self._settings["remote_client_dest"] = self._rclient_dest_e.get().strip()
         try:
             self._settings["remote_client_port"] = int(
-                self._rclient_port_e.get().strip() or "9988")
+                self._rclient_port_e.get().strip() or "9989")
         except (ValueError, AttributeError):
             pass
         # Save password if checkbox is checked

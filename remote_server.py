@@ -36,7 +36,8 @@ KEY_FILE   = SSL_DIR / "key.pem"
 
 TOKEN_TTL_H  = 24          # JWT validity in hours (default — overridable in settings)
 TOKEN_TTL_OPTIONS = [1, 8, 24, 168]  # 1h / 8h / 24h / 7 days
-DEFAULT_PORT = 9988
+LOCAL_EXT_PORT = 9988   # HTTP, 127.0.0.1 only — browser extension, always on
+DEFAULT_PORT   = 9989   # HTTPS, 0.0.0.0 — remote TD clients, opt-in
 
 # ── Pydantic models — defined at module level (required for Pydantic v2 + Python 3.14) ──
 
@@ -309,11 +310,13 @@ class RemoteServer:
     """
 
     def __init__(self, app_ref, settings: dict):
-        self._app_ref  = app_ref     # TurboDownloader instance
-        self._settings = settings
-        self._thread: Optional[threading.Thread] = None
-        self._server   = None        # uvicorn Server instance
-        self._running  = False
+        self._app_ref        = app_ref     # TurboDownloader instance
+        self._settings       = settings
+        self._local_server   = None        # HTTP, 127.0.0.1 — extension
+        self._local_thread: Optional[threading.Thread] = None
+        self._remote_server  = None        # HTTPS, 0.0.0.0 — TD clients (optional)
+        self._remote_thread: Optional[threading.Thread] = None
+        self._running        = False
 
     # ---------------------------------------------------------------- Start/Stop
 
@@ -330,19 +333,6 @@ class RemoteServer:
             _log.error(msg)
             self._show_error(msg)
             return False
-
-        port      = int(self._settings.get("remote_port", DEFAULT_PORT))
-        use_ssl   = bool(self._settings.get("remote_use_ssl", False))
-
-        if use_ssl:
-            ssl_ok = ensure_ssl_cert()
-            if not ssl_ok:
-                msg = (f"Remote server cannot start.\nSSL certificate generation failed.\n\n"
-                       f"CERT_FILE={CERT_FILE}\nKEY_FILE={KEY_FILE}\n"
-                       f"Exists: cert={CERT_FILE.exists()}, key={KEY_FILE.exists()}")
-                _log.error(msg)
-                self._show_error(msg)
-                return False
 
         try:
             fastapi_app = self._build_fastapi_app()
@@ -368,32 +358,52 @@ class RemoteServer:
                 },
             }
 
-            cfg_kwargs = dict(
+            # ── Server 1: HTTP, localhost only, for browser extension ─────────
+            local_cfg = uvicorn.Config(
                 app=fastapi_app,
-                host="0.0.0.0",
-                port=port,
+                host="127.0.0.1",
+                port=LOCAL_EXT_PORT,
                 log_config=UVICORN_LOG_CONFIG,
                 loop="asyncio",
-                workers=1,
                 access_log=False,
             )
-            if use_ssl:
-                cfg_kwargs["ssl_certfile"] = str(CERT_FILE)
-                cfg_kwargs["ssl_keyfile"]  = str(KEY_FILE)
-
-            config           = uvicorn.Config(**cfg_kwargs)
-            self._server     = uvicorn.Server(config)
-            self._use_ssl    = use_ssl
-            self._bound_port = port
-            self._thread     = threading.Thread(
-                target=self._server.run,
+            self._local_server = uvicorn.Server(local_cfg)
+            self._local_thread = threading.Thread(
+                target=self._local_server.run,
                 daemon=True,
-                name="TurboRemoteServer",
+                name="TurboLocalServer",
             )
-            self._thread.start()
+            self._local_thread.start()
             self._running = True
-            proto = "https" if use_ssl else "http"
-            print(f"[remote] Server started on {proto}://0.0.0.0:{port}")
+            print(f"[remote] Extension server started on http://127.0.0.1:{LOCAL_EXT_PORT}")
+
+            # ── Server 2: HTTPS, all interfaces, for remote TD clients ────────
+            if self._settings.get("remote_enable_external", False):
+                remote_port = int(self._settings.get("remote_port", DEFAULT_PORT))
+                ssl_ok = ensure_ssl_cert()
+                if not ssl_ok:
+                    _log.warning("HTTPS cert generation failed — remote access disabled")
+                else:
+                    remote_cfg = uvicorn.Config(
+                        app=fastapi_app,
+                        host="0.0.0.0",
+                        port=remote_port,
+                        log_config=UVICORN_LOG_CONFIG,
+                        loop="asyncio",
+                        access_log=False,
+                        ssl_certfile=str(CERT_FILE),
+                        ssl_keyfile=str(KEY_FILE),
+                    )
+                    self._remote_server = uvicorn.Server(remote_cfg)
+                    self._remote_thread = threading.Thread(
+                        target=self._remote_server.run,
+                        daemon=True,
+                        name="TurboRemoteServer",
+                    )
+                    self._remote_thread.start()
+                    self._bound_port = remote_port
+                    print(f"[remote] Remote access server started on https://0.0.0.0:{remote_port}")
+
             return True
 
         except Exception as e:
@@ -417,11 +427,13 @@ class RemoteServer:
             pass  # last resort — already printed above
 
     def stop(self):
-        """Gracefully shuts down the server."""
-        if self._server and self._running:
-            self._server.should_exit = True
-            self._running = False
-            print("[remote] Server stopped")
+        """Gracefully shuts down both servers."""
+        if self._local_server:
+            self._local_server.should_exit = True
+        if self._remote_server:
+            self._remote_server.should_exit = True
+        self._running = False
+        print("[remote] Server(s) stopped")
 
     @property
     def is_running(self) -> bool:
@@ -439,12 +451,11 @@ class RemoteServer:
 
         api = FastAPI(title="TurboDownloader Remote API", version="1.0")
 
-        _port = settings.get("remote_port", 9988)
         api.add_middleware(
             CORSMiddleware,
             allow_origins=[
-                f"http://localhost:{_port}",
-                f"http://127.0.0.1:{_port}",
+                f"http://localhost:{LOCAL_EXT_PORT}",
+                f"http://127.0.0.1:{LOCAL_EXT_PORT}",
                 "http://localhost",
                 "http://127.0.0.1",
             ],
@@ -871,9 +882,7 @@ class RemoteClient:
     _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
     def __init__(self, host: str, port: int, username: str, password: str):
-        is_loopback   = host.lower() in self._LOOPBACK
-        proto         = "http" if is_loopback else "https"
-        self._base    = f"{proto}://{host}:{port}"
+        self._base    = f"https://{host}:{port}"
         self._host    = host
         self._port    = port
         self._verify  = False
