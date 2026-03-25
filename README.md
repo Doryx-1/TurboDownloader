@@ -2,7 +2,7 @@
 
 > A powerful desktop download manager built for Jellyfin, Plex, and Emby server admins - with remote control, browser extension, and bulk media downloading built in.
 
-![Version](https://img.shields.io/badge/version-2.7.4-blue)
+![Version](https://img.shields.io/badge/version-2.7.5-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
 
@@ -182,6 +182,24 @@ When you send a link, TurboDownloader comes to the front and opens its file tree
 | Remote Client | Connect to a remote TurboDownloader instance, browse remote filesystem |
 
 Config, history, and SSL certificates are stored in `~/.turbodownloader/`.
+
+---
+
+## Security
+
+v2.7.5 includes 9 security fixes:
+
+| # | Area | Fix |
+|---|---|---|
+| 1 | **HTTPS** | Re-enabled TLS (`use_ssl=True`); browser extension updated to `https://127.0.0.1:9988` |
+| 2 | **Credentials in URL** | `/admin/trigger-update` credentials moved from query params to JSON body |
+| 3 | **Installer integrity** | SHA-256 verification of the downloaded installer before launch (best-effort, non-blocking if no `.sha256` asset is present) |
+| 4 | **Path traversal** | `unquote()` applied before `basename()` + illegal filename characters stripped on save |
+| 5 | **Encryption key** | Fernet key is now a random key stored in `~/.turbodownloader/keystore` instead of a machine-derived key |
+| 6 | **Profile passwords** | Connection profile passwords are now encrypted with `_encrypt_password()` at rest |
+| 7 | **Password hashing** | SHA-256 fallback removed from `hash_password()` — bcrypt is required; a migration path is kept in `verify_password()` for existing hashes |
+| 8 | **Brute-force protection** | Login endpoint no longer blocks with a `sleep()` — responds immediately with `429 Too Many Requests` + `Retry-After` header |
+| 9 | **Token TTL** | Local token expiry is now enforced: timestamp stored in JSON and verified on every call |
 
 ---
 
