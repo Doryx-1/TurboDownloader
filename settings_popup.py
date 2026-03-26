@@ -619,7 +619,7 @@ class SettingsPopup(ctk.CTkToplevel):
         ext_row.pack(fill="x", padx=20, pady=(0, 10))
         self._ext_enabled_var = ctk.BooleanVar(
             value=self._settings.get("extension_enabled", True))
-        ctk.CTkSwitch(ext_row, text="Browser extension listener  (HTTP · 127.0.0.1:9988 · restart to change)",
+        ctk.CTkSwitch(ext_row, text="Browser extension listener",
                       variable=self._ext_enabled_var).pack(
                           side="left", padx=14, pady=10)
 
