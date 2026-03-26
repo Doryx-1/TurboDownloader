@@ -20,28 +20,49 @@ if __name__ == "__main__":
             srv.bind(("127.0.0.1", _LOCK_PORT))
             srv.listen(5)
             _lock_server = srv
-            # Listen for focus signals from future instances
+            # Listen for signals from future instances
             import threading
             def _listen():
                 while True:
                     try:
                         conn, _ = srv.accept()
-                        msg = conn.recv(64).decode(errors="ignore").strip()
+                        msg = conn.recv(2048).decode(errors="ignore").strip()
                         conn.close()
-                        if msg == "FOCUS" and "app" in globals():
-                            globals()["app"].after(0, globals()["app"]._tray_restore)
+                        a = globals().get("app")
+                        if not a:
+                            continue
+                        if msg.startswith("URL:"):
+                            protocol_url = msg[4:]
+                            try:
+                                from tray import parse_protocol_url
+                                parsed = parse_protocol_url(protocol_url)
+                                if parsed["action"] == "send" and parsed["urls"]:
+                                    def _inject(urls=parsed["urls"]):
+                                        a.url_box.delete("1.0", "end")
+                                        a.url_box.insert("end", "\n".join(urls))
+                                        a._show_for_popup()
+                                        a.start_downloads()
+                                    a.after(0, _inject)
+                            except Exception as _e:
+                                print(f"[main] IPC URL inject error: {_e}")
+                        elif msg == "FOCUS":
+                            a.after(0, a._tray_restore)
                     except Exception:
                         break
             threading.Thread(target=_listen, daemon=True,
                              name="InstanceLock").start()
             return True
         except OSError:
-            # Port busy → another instance running — send FOCUS and exit
+            # Port busy → another instance running
             try:
                 c = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
                 c.settimeout(1.0)
                 c.connect(("127.0.0.1", _LOCK_PORT))
-                c.sendall(b"FOCUS")
+                # Forward protocol URL if present, otherwise just focus
+                if len(sys.argv) > 1 and sys.argv[1].startswith("turbodownloader://"):
+                    c.sendall(f"URL:{sys.argv[1]}".encode())
+                else:
+                    c.sendall(b"FOCUS")
                 c.close()
             except Exception:
                 pass
