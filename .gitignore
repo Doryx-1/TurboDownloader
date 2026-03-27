@@ -37,6 +37,7 @@ config.local.*
 settings.local.*
 bump_version.py
 CLAUDE.md
+.claude/
 
 # Autres
 *.spec
