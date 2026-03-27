@@ -45,7 +45,6 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
     def __init__(self):
         super().__init__()
 
-        ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
         self.title("TurboDownloader")
@@ -95,6 +94,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
 
         # Settings (temp dir, etc.)
         self._settings = load_settings()
+        ctk.set_appearance_mode(self._settings.get("appearance_mode", "dark"))
 
         # History des téléchargements
         self._history = HistoryManager()
@@ -266,7 +266,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 self._clipboard_banner.destroy()
             except Exception:
                 pass
-        banner = ctk.CTkFrame(self._scroll_container, fg_color="#1a2a3a",
+        banner = ctk.CTkFrame(self._scroll_container, fg_color=("gray85", "#1a2a3a"),
                               corner_radius=6, border_width=1, border_color="#2a5a8a")
         banner.place(relx=0.5, rely=0.0, anchor="n", relwidth=0.96, y=6)
         self._clipboard_banner = banner
@@ -274,9 +274,9 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         inner = ctk.CTkFrame(banner, fg_color="transparent")
         inner.pack(fill="x", padx=10, pady=6)
         ctk.CTkLabel(inner, text="📋 Clipboard URL detected:",
-                     font=ctk.CTkFont(size=11), text_color="#7ab4d4").pack(side="left")
+                     font=ctk.CTkFont(size=11), text_color=("#1a4a8a", "#7ab4d4")).pack(side="left")
         ctk.CTkLabel(inner, text=url[:60] + ("…" if len(url) > 60 else ""),
-                     font=ctk.CTkFont(size=10), text_color="#aaaaaa").pack(side="left", padx=(6, 0))
+                     font=ctk.CTkFont(size=10), text_color=("gray40", "#aaaaaa")).pack(side="left", padx=(6, 0))
         ctk.CTkButton(inner, text="Add to queue", width=110, height=24,
                       fg_color="#1f6aa5", hover_color="#1a5a8f",
                       font=ctk.CTkFont(size=11),
@@ -349,7 +349,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         root.pack(fill="both", expand=True)
 
         # ── Sidebar ───────────────────────────────────────────────────────────
-        sidebar = ctk.CTkFrame(root, width=300, corner_radius=0, fg_color="#1a1a1a")
+        sidebar = ctk.CTkFrame(root, width=300, corner_radius=0, fg_color=("gray92", "#1a1a1a"))
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
@@ -362,15 +362,15 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
 
         # Séparateur
-        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(8, 12))
+        ctk.CTkFrame(sidebar, height=1, fg_color=("gray75", "#2a2a2a")).pack(fill="x", padx=0, pady=(8, 12))
 
         # ── URL box ───────────────────────────────────────────────────────────
         ctk.CTkLabel(sidebar, text="URLs", font=ctk.CTkFont(size=11, weight="bold"),
                      text_color="#888888").pack(anchor="w", padx=16, pady=(0, 4))
         self.url_box = ctk.CTkTextbox(sidebar, height=100, wrap="none",
                                       activate_scrollbars=True,
-                                      fg_color="#242424", border_width=1,
-                                      border_color="#333333")
+                                      border_width=1,
+                                      border_color=("gray70", "#333333"))
         self.url_box.pack(fill="x", padx=16, pady=(0, 4))
         ctk.CTkLabel(sidebar, text="One URL per line — spaces also work",
                      text_color="#555555", font=ctk.CTkFont(size=10)).pack(
@@ -380,7 +380,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.bind("<Control-v>", self._on_global_paste)
 
         # ── Options ───────────────────────────────────────────────────────────
-        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 10))
+        ctk.CTkFrame(sidebar, height=1, fg_color=("gray75", "#2a2a2a")).pack(fill="x", padx=0, pady=(0, 10))
 
         # keep_tree_var — géré dans la popup FileTreePopup directement
         self.keep_tree_var = ctk.BooleanVar(value=True)  # valeur initiale pour la popup
@@ -388,7 +388,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         # Workers — lus depuis les settings
 
         # ── Boutons START / STOP ──────────────────────────────────────────────
-        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 12))
+        ctk.CTkFrame(sidebar, height=1, fg_color=("gray75", "#2a2a2a")).pack(fill="x", padx=0, pady=(0, 12))
 
         self.start_btn = ctk.CTkButton(
             sidebar, text="▶  Start", height=38,
@@ -399,20 +399,22 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
 
         self.pause_all_btn = ctk.CTkButton(
             sidebar, text="⏸  Pause all", height=34,
-            fg_color="#1a1a2e", hover_color="#2a2a4e",
+            fg_color=("gray80", "#1a1a2e"), hover_color=("gray70", "#2a2a4e"),
+            text_color=("#1a1a6a", "#9999cc"),
             border_width=1, border_color="#4a4a8a",
             command=self._toggle_pause_all)
         self.pause_all_btn.pack(fill="x", padx=16, pady=(0, 6))
 
         self.stop_btn = ctk.CTkButton(
             sidebar, text="⏹  Stop all", height=34,
-            fg_color="#3a1010", hover_color="#5a1515",
+            fg_color=("gray80", "#3a1010"), hover_color=("gray70", "#5a1515"),
+            text_color=("#6a0000", "#cc8888"),
             border_width=1, border_color="#8B0000",
             command=self.stop_all)
         self.stop_btn.pack(fill="x", padx=16, pady=(0, 12))
 
         # ── Stats globales ────────────────────────────────────────────────────
-        ctk.CTkFrame(sidebar, height=1, fg_color="#2a2a2a").pack(fill="x", padx=0, pady=(0, 10))
+        ctk.CTkFrame(sidebar, height=1, fg_color=("gray75", "#2a2a2a")).pack(fill="x", padx=0, pady=(0, 10))
 
         self.global_speed_label = ctk.CTkLabel(
             sidebar, text="–", anchor="w",
@@ -429,12 +431,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         # Chacune est indépendante — on peut être serveur ET client en même temps.
 
         # Barre serveur (verte)
-        self._remote_srv_bar = ctk.CTkFrame(sidebar, fg_color="#0d1f0d",
+        self._remote_srv_bar = ctk.CTkFrame(sidebar, fg_color=("gray90", "#0d1f0d"),
                                             corner_radius=6, border_width=1,
-                                            border_color="#1a3a1a")
+                                            border_color=("#1a6a1a", "#1a3a1a"))
         self._remote_srv_lbl = ctk.CTkLabel(
             self._remote_srv_bar, text="", anchor="w",
-            font=ctk.CTkFont(size=10), text_color="#7aaa7a")
+            font=ctk.CTkFont(size=10), text_color=("#1a6a1a", "#7aaa7a"))
         self._remote_srv_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=5)
         ctk.CTkButton(
             self._remote_srv_bar, text="✕", width=26, height=20,
@@ -444,18 +446,18 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             command=self._disconnect_server).pack(side="right", padx=(0, 6), pady=4)
 
         # Barre client (bleue)
-        self._remote_cli_bar = ctk.CTkFrame(sidebar, fg_color="#0d0d1f",
+        self._remote_cli_bar = ctk.CTkFrame(sidebar, fg_color=("gray90", "#0d0d1f"),
                                             corner_radius=6, border_width=1,
-                                            border_color="#1a1a3a")
+                                            border_color=("#1a1a8a", "#1a1a3a"))
         self._remote_cli_lbl = ctk.CTkLabel(
             self._remote_cli_bar, text="", anchor="w",
-            font=ctk.CTkFont(size=10), text_color="#7aaadd")
+            font=ctk.CTkFont(size=10), text_color=("#1a1a8a", "#7aaadd"))
         self._remote_cli_lbl.pack(side="left", fill="x", expand=True, padx=10, pady=5)
         ctk.CTkButton(
             self._remote_cli_bar, text="✕", width=26, height=20,
             font=ctk.CTkFont(size=11),
-            fg_color="transparent", hover_color="#1a1a3a",
-            text_color="#7aaadd", border_width=0,
+            fg_color="transparent", hover_color=("gray80", "#1a1a3a"),
+            text_color=("#1a1a8a", "#7aaadd"), border_width=0,
             command=self._disconnect_client).pack(side="right", padx=(0, 6), pady=4)
         # Démarrées masquées — affichées par _update_remote_status_bar()
 
@@ -464,18 +466,18 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         bot_btns = ctk.CTkFrame(sidebar, fg_color="transparent")
         bot_btns.pack(side="bottom", fill="x", padx=16, pady=(0, 4))
         ctk.CTkButton(bot_btns, text="⚙ Settings", height=30,
-                      fg_color="transparent", border_width=1, border_color="#333333",
-                      font=ctk.CTkFont(size=12),
+                      fg_color="transparent", border_width=1, border_color=("gray65", "#333333"),
+                      text_color=("gray10", "#dddddd"), font=ctk.CTkFont(size=12),
                       command=self._open_settings).pack(side="left", expand=True,
                                                         fill="x", padx=(0, 4))
         ctk.CTkButton(bot_btns, text="🕐 History", height=30,
-                      fg_color="transparent", border_width=1, border_color="#333333",
-                      font=ctk.CTkFont(size=12),
+                      fg_color="transparent", border_width=1, border_color=("gray65", "#333333"),
+                      text_color=("gray10", "#dddddd"), font=ctk.CTkFont(size=12),
                       command=self._open_history).pack(side="left", expand=True,
                                                        fill="x", padx=(4, 4))
         ctk.CTkButton(bot_btns, text="📡 Remote", height=30,
-                      fg_color="transparent", border_width=1, border_color="#333333",
-                      font=ctk.CTkFont(size=12),
+                      fg_color="transparent", border_width=1, border_color=("gray65", "#333333"),
+                      text_color=("gray10", "#dddddd"), font=ctk.CTkFont(size=12),
                       command=self._open_remote_control).pack(side="left", expand=True,
                                                               fill="x", padx=(0, 0))
 
@@ -492,15 +494,15 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self._clear_remote_btn.pack_forget()   # hidden until client connects
 
         ctk.CTkLabel(sidebar, text="© Doryx-1",
-                     font=ctk.CTkFont(size=10), text_color="#333333").pack(
+                     font=ctk.CTkFont(size=10), text_color="gray").pack(
                          side="bottom", anchor="w", padx=16, pady=(0, 6))
 
         # ── Zone principale droite ────────────────────────────────────────────
-        main_area = ctk.CTkFrame(root, fg_color="#111111", corner_radius=0)
+        main_area = ctk.CTkFrame(root, fg_color=("gray95", "#111111"), corner_radius=0)
         main_area.pack(side="right", fill="both", expand=True)
 
         # Barre du haut : titre + filtres
-        top_bar = ctk.CTkFrame(main_area, fg_color="#1a1a1a", corner_radius=0, height=50)
+        top_bar = ctk.CTkFrame(main_area, fg_color=("gray90", "#1a1a1a"), corner_radius=0, height=50)
         top_bar.pack(fill="x")
         top_bar.pack_propagate(False)
 
@@ -517,8 +519,9 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         # Bouton Clear finished — bas droite du header
         ctk.CTkButton(top_bar, text="🗑 Clear", width=80, height=28,
                       font=ctk.CTkFont(size=11),
-                      fg_color="transparent", border_width=1, border_color="#333333",
-                      hover_color="#2a2a2a",
+                      fg_color="transparent", border_width=1, border_color=("gray65", "#333333"),
+                      hover_color=("gray80", "#2a2a2a"),
+                      text_color=("gray10", "#dddddd"),
                       command=self.clear_finished).pack(side="right", padx=(0, 10), pady=10)
 
         # Filtres compacts
@@ -539,6 +542,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 filter_frame, text=flabel, width=90, height=28,
                 font=ctk.CTkFont(size=11),
                 fg_color=fcolor if fkey == "all" else "transparent",
+                text_color="white" if fkey == "all" else ("gray10", "#dddddd"),
                 border_width=1, border_color=fcolor,
                 command=lambda k=fkey: self._set_filter(k),
             )
@@ -553,12 +557,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self._empty_frame = ctk.CTkFrame(self._scroll_container, fg_color="transparent")
         self._empty_frame.place(relx=0.5, rely=0.5, anchor="center")
         ctk.CTkLabel(self._empty_frame, text="⬇",
-                     font=ctk.CTkFont(size=48), text_color="#2a2a2a").pack()
+                     font=ctk.CTkFont(size=48), text_color=("gray60", "#555555")).pack()
         ctk.CTkLabel(self._empty_frame, text="No downloads yet",
                      font=ctk.CTkFont(size=16, weight="bold"),
-                     text_color="#333333").pack(pady=(4, 2))
+                     text_color=("gray40", "#aaaaaa")).pack(pady=(4, 2))
         ctk.CTkLabel(self._empty_frame, text="Paste a URL and hit Start",
-                     text_color="#3a3a3a", font=ctk.CTkFont(size=12)).pack()
+                     text_color=("gray50", "#888888"), font=ctk.CTkFont(size=12)).pack()
 
         self.scroll = ctk.CTkScrollableFrame(self._scroll_container,
                                              fg_color="transparent")
@@ -825,7 +829,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
         elif it.state == "downloading":
-            row.pause_btn.configure(state="normal", text="⏸", fg_color="transparent", border_color="#3a3a3a", text_color="#dddddd")
+            row.pause_btn.configure(state="normal", text="⏸", fg_color="transparent", border_color=("gray60", "#3a3a3a"), text_color=("gray15", "#dddddd"))
             row.cancel_btn.configure(state="normal")
             row.remove_btn.configure(state="disabled")
         elif it.state == "moving":
@@ -864,7 +868,11 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             "error":       "#8B0000",
         }
         for k, btn in self._filter_btns.items():
-            btn.configure(fg_color=colors[k] if k == fkey else "transparent")
+            active = (k == fkey)
+            btn.configure(
+                fg_color=colors[k] if active else "transparent",
+                text_color="white" if active else ("gray10", "#dddddd"),
+            )
         for idx in self.rows:
             self._apply_filter_to_row(idx)
 

@@ -51,6 +51,44 @@ def _center_on_master(window, master):
     window.geometry(f"+{max(0,x)}+{max(0,y)}")
 
 
+def _ask_folder_name(parent) -> str | None:
+    """Custom centered input dialog for folder name. Returns the name or None."""
+    result = [None]
+
+    dlg = ctk.CTkToplevel(parent)
+    dlg.title("New folder")
+    dlg.resizable(False, False)
+    dlg.grab_set()
+
+    ctk.CTkLabel(dlg, text="Folder name:").pack(padx=20, pady=(16, 4))
+    entry = ctk.CTkEntry(dlg, width=220)
+    entry.pack(padx=20, pady=(0, 12))
+    entry.focus_set()
+
+    btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+    btn_row.pack(padx=20, pady=(0, 14))
+
+    def _ok():
+        result[0] = entry.get()
+        dlg.destroy()
+
+    def _cancel():
+        dlg.destroy()
+
+    ctk.CTkButton(btn_row, text="Cancel", width=90, fg_color="#5a5a5a",
+                  hover_color="#6a6a6a", command=_cancel).pack(side="left", padx=(0, 8))
+    ctk.CTkButton(btn_row, text="OK", width=90, command=_ok).pack(side="left")
+
+    entry.bind("<Return>", lambda e: _ok())
+    entry.bind("<Escape>", lambda e: _cancel())
+
+    dlg.update_idletasks()
+    _center_on_master(dlg, parent)
+
+    parent.wait_window(dlg)
+    return result[0]
+
+
 class FileTreePopup(ctk.CTkToplevel):
     """Popup de sélection — liste PLATE in le scroll (pas de frames imbriqués)."""
 
@@ -174,6 +212,7 @@ class FileTreePopup(ctk.CTkToplevel):
         ctk.CTkButton(
             search_bar, text="✕", width=32,
             fg_color="transparent", border_width=1,
+            text_color=("gray10", "#dddddd"),
             command=self._clear_search,
         ).pack(side="left")
 
@@ -197,6 +236,7 @@ class FileTreePopup(ctk.CTkToplevel):
             btn = ctk.CTkButton(
                 btn_bar, text=label, width=130,
                 fg_color="transparent", border_width=1,
+                text_color=("gray10", "#dddddd"),
                 command=lambda k=key: self._apply_sort(k),
             )
             btn.pack(side="left", padx=3)
@@ -212,7 +252,7 @@ class FileTreePopup(ctk.CTkToplevel):
         self._refresh_count()
 
         # ── Destination bar ───────────────────────────────────────────────────
-        dest_bar = ctk.CTkFrame(self, fg_color="#232323")
+        dest_bar = ctk.CTkFrame(self, fg_color=("gray88", "#232323"))
         dest_bar.pack(fill="x", padx=0, pady=0)
 
         ctk.CTkLabel(dest_bar, text="📁  Destination:",
@@ -226,7 +266,7 @@ class FileTreePopup(ctk.CTkToplevel):
         # History dropdown — only shown if there are recent destinations
         if self._recent_dests:
             ctk.CTkButton(dest_bar, text="▾", width=30,
-                          fg_color="#2a2a2a", hover_color="#3a3a3a",
+                          fg_color=("gray78", "#2a2a2a"), hover_color=("gray73", "#3a3a3a"),
                           font=ctk.CTkFont(size=14),
                           command=self._show_dest_history).pack(side="left", padx=(0, 4), pady=10)
 
@@ -240,8 +280,8 @@ class FileTreePopup(ctk.CTkToplevel):
                       command=self._cancel).pack(side="right", padx=(8, 0))
         ctk.CTkButton(bot, text="⬇  Start download", fg_color="#1f6aa5",
                       command=self._confirm).pack(side="right")
-        ctk.CTkButton(bot, text="📁 New folder", width=130, fg_color="#3a3a3a",
-                      hover_color="#4a4a4a",
+        ctk.CTkButton(bot, text="📁 New folder", width=130, fg_color=("gray75", "#3a3a3a"),
+                      hover_color=("gray70", "#4a4a4a"),
                       command=self._mkdir_dest).pack(side="left")
 
     def _create_row(self, node: FileTreeNode):
@@ -258,7 +298,8 @@ class FileTreePopup(ctk.CTkToplevel):
         if node.is_dir:
             expand_btn = ctk.CTkButton(
                 row, text="▼", width=24, height=24,
-                fg_color="transparent", hover_color="#3a3a3a",
+                fg_color="transparent", hover_color=("gray78", "#3a3a3a"),
+                text_color=("gray10", "#dddddd"),
                 font=ctk.CTkFont(size=10),
                 command=lambda n=node: self._toggle_expand(n),
             )
@@ -550,7 +591,7 @@ class FileTreePopup(ctk.CTkToplevel):
         menu.geometry(f"{w}x{min(len(self._recent_dests) * 36, 220)}+{x}+{y}")
         # NO grab_set() — would block parent window clicks
 
-        scroll = ctk.CTkScrollableFrame(menu, fg_color="#1e1e1e")
+        scroll = ctk.CTkScrollableFrame(menu, fg_color=("gray90", "#1e1e1e"))
         scroll.pack(fill="both", expand=True)
 
         def _close_menu(event=None):
@@ -566,8 +607,9 @@ class FileTreePopup(ctk.CTkToplevel):
             display = path if len(path) <= 55 else "…" + path[-52:]
             ctk.CTkButton(
                 scroll, text=display, anchor="w",
-                fg_color="transparent", hover_color="#2a3a4a",
-                text_color="#cccccc", font=ctk.CTkFont(size=11),
+                fg_color="transparent", hover_color=("gray78", "#2a3a4a"),
+                text_color=("gray10", "#cccccc"),
+                font=ctk.CTkFont(size=11),
                 height=30,
                 command=lambda p=path: _pick(p),
             ).pack(fill="x", padx=2, pady=1)
@@ -589,15 +631,17 @@ class FileTreePopup(ctk.CTkToplevel):
         dest = self._dest_entry.get().strip()
         if not dest:
             return
-        dialog = ctk.CTkInputDialog(text="Folder name:", title="New folder")
-        name = dialog.get_input()
+        name = _ask_folder_name(self)
         if not name:
             return
         name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
         if not name:
             return
+        new_path = os.path.join(dest, name)
         try:
-            os.makedirs(os.path.join(dest, name), exist_ok=True)
+            os.makedirs(new_path, exist_ok=True)
+            self._dest_entry.delete(0, "end")
+            self._dest_entry.insert(0, new_path)
         except Exception:
             pass
 

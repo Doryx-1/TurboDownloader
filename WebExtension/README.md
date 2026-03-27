@@ -13,7 +13,7 @@ Sends downloads from your browser directly to the TurboDownloader desktop app ru
 
 ## Requirements
 
-- TurboDownloader desktop app v2.7.6+
+- TurboDownloader desktop app v2.7.7+
 - Chrome 109+, Edge 109+, or Firefox 109+
 
 ## Installation

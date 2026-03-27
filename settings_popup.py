@@ -92,6 +92,13 @@ def _migrate_settings(settings: dict) -> bool:
             print("[settings] migrated remote_port 9988 → 9989")
             dirty = True
 
+    # ── 2.7.7 : ensure extension_enabled is explicitly saved (default True) ──
+    if _version_tuple(stored) < _version_tuple("2.7.7"):
+        if "extension_enabled" not in settings:
+            settings["extension_enabled"] = True
+            print("[settings] migrated extension_enabled → True")
+            dirty = True
+
     settings["settings_version"] = current
     return dirty or stored != current
 
@@ -130,6 +137,8 @@ def load_settings() -> dict:
         "remote_client_autoretry":      True,
         # destination history — loaded from dedicated file, not settings.json
         "dest_history":                 [],
+        # appearance
+        "appearance_mode":              "dark",   # dark / light / system
         # migration tracking
         "settings_version":             "",   # filled at load time by _migrate_settings
     }
@@ -249,7 +258,7 @@ class SettingsPopup(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
 
         # ── Tab bar ───────────────────────────────────────────────────────
-        tab_bar = ctk.CTkFrame(self, fg_color="#1a1a1a", corner_radius=0)
+        tab_bar = ctk.CTkFrame(self, fg_color=("gray88", "#1a1a1a"), corner_radius=0)
         tab_bar.grid(row=0, column=0, sticky="ew")
 
         self._tab_panels: dict = {}
@@ -266,7 +275,8 @@ class SettingsPopup(ctk.CTkToplevel):
         for key, label in tabs:
             btn = ctk.CTkButton(
                 tab_bar, text=label, height=34,
-                fg_color="transparent", hover_color="#2a2a2a",
+                fg_color="transparent", hover_color=("gray78", "#2a2a2a"),
+                text_color=("gray10", "#dddddd"),
                 corner_radius=0,
                 font=ctk.CTkFont(size=12),
                 command=lambda k=key: self._show_tab(k),
@@ -281,7 +291,7 @@ class SettingsPopup(ctk.CTkToplevel):
         self._panel_host.grid_columnconfigure(0, weight=1)
 
         # ── Bottom buttons ────────────────────────────────────────────────
-        bot = ctk.CTkFrame(self, fg_color="#2b2b2b", corner_radius=0)
+        bot = ctk.CTkFrame(self, fg_color=("gray85", "#2b2b2b"), corner_radius=0)
         bot.grid(row=2, column=0, sticky="ew")
         ctk.CTkButton(bot, text="Cancel", width=110, fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=(8, 16), pady=10)
@@ -303,7 +313,11 @@ class SettingsPopup(ctk.CTkToplevel):
         for k, panel in self._tab_panels.items():
             panel.grid_remove()
         for k, btn in self._tab_btns.items():
-            btn.configure(fg_color="#1f6aa5" if k == key else "transparent")
+            active = (k == key)
+            btn.configure(
+                fg_color="#1f6aa5" if active else "transparent",
+                text_color="white" if active else ("gray10", "#dddddd"),
+            )
         self._tab_panels[key].grid(row=0, column=0, sticky="nsew",
                                    in_=self._panel_host)
 
@@ -341,6 +355,7 @@ class SettingsPopup(ctk.CTkToplevel):
                       command=self._browse_dest).pack(side="left")
         ctk.CTkButton(left, text="Reset to Downloads", width=180,
                       fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#dddddd"),
                       command=self._reset_dest).pack(anchor="w", padx=4, pady=(2, 10))
 
         self._section(left, "Temporary download folder",
@@ -354,6 +369,7 @@ class SettingsPopup(ctk.CTkToplevel):
                       command=self._browse_temp).pack(side="left")
         ctk.CTkButton(left, text="Reset to default", width=180,
                       fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#dddddd"),
                       command=self._reset_default).pack(anchor="w", padx=4, pady=(2, 10))
 
         # Right — workers / retry / bandwidth / multipart
@@ -427,7 +443,7 @@ class SettingsPopup(ctk.CTkToplevel):
                         variable=self._clipboard_var,
                         command=self._on_clipboard_toggle).pack(side="left")
 
-        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkFrame(p, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(0, 4))
 
         self._section(p, "File already exists",
                       "What to do when the destination file already exists.")
@@ -445,21 +461,6 @@ class SettingsPopup(ctk.CTkToplevel):
                      text="ask = popup each time  |  rename = add _2, _3…",
                      text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left")
 
-        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 4))
-
-        self._section(p, "yt-dlp / streaming",
-                      "Dependencies for streaming URL downloads (YouTube, Vimeo, etc.)")
-        row_ff = ctk.CTkFrame(p, fg_color="transparent")
-        row_ff.pack(fill="x", padx=20, pady=(0, 6))
-        ctk.CTkLabel(row_ff, text="ffmpeg path:", width=130, anchor="w").pack(side="left")
-        ctk.CTkLabel(row_ff, text="Auto-detected from app folder or PATH",
-                     text_color="gray").pack(side="left")
-
-        row_nd = ctk.CTkFrame(p, fg_color="transparent")
-        row_nd.pack(fill="x", padx=20, pady=(0, 14))
-        ctk.CTkLabel(row_nd, text="Node.js path:", width=130, anchor="w").pack(side="left")
-        ctk.CTkLabel(row_nd, text="Auto-detected — or install via Settings → Remote",
-                     text_color="gray").pack(side="left")
 
     # ── Tab: Extensions ───────────────────────────────────────────────────
     def _build_tab_extensions(self):
@@ -490,7 +491,7 @@ class SettingsPopup(ctk.CTkToplevel):
             cb = ctk.CTkCheckBox(ext_grid, text=ext, variable=var, width=100)
             cb.grid(row=i // 4, column=i % 4, padx=6, pady=2, sticky="w")
 
-        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(8, 4))
+        ctk.CTkFrame(p, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(8, 4))
 
         row_custom = ctk.CTkFrame(p, fg_color="transparent")
         row_custom.pack(fill="x", padx=20, pady=(4, 0))
@@ -547,15 +548,21 @@ class SettingsPopup(ctk.CTkToplevel):
                         text="Minimize to tray when closing the window",
                         variable=self._minimize_tray_var).pack(side="left")
 
-        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 8))
+        ctk.CTkFrame(p, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(0, 8))
 
-        self._section(p, "Protocol",
-                      "Custom URL handler for browser extension integration.")
-        ctk.CTkLabel(p, text="turbodownloader:// — registered automatically at each launch",
-                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
-                         anchor="w", padx=20, pady=(0, 14))
+        self._section(p, "Appearance", "Interface theme.")
+        row_theme = ctk.CTkFrame(p, fg_color="transparent")
+        row_theme.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(row_theme, text="Theme:", width=130, anchor="w").pack(side="left")
+        self._appearance_var = ctk.StringVar(
+            value=self._settings.get("appearance_mode", "dark").capitalize())
+        ctk.CTkSegmentedButton(
+            row_theme, values=["Dark", "Light", "System"],
+            variable=self._appearance_var,
+            command=self._on_appearance_change,
+        ).pack(side="left")
 
-        ctk.CTkFrame(p, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 8))
+        ctk.CTkFrame(p, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(0, 8))
 
         self._section(p, "About", "")
         info = ctk.CTkFrame(p, fg_color="transparent")
@@ -574,8 +581,9 @@ class SettingsPopup(ctk.CTkToplevel):
                         variable=self._check_updates_var).pack(side="left")
         ctk.CTkButton(row_upd, text="Check now",
                       width=110, fg_color="transparent",
-                      border_width=1, border_color="#3a3a3a",
-                      hover_color="#2a2a2a",
+                      border_width=1, border_color=("gray65", "#3a3a3a"),
+                      hover_color=("gray78", "#2a2a2a"),
+                      text_color=("gray10", "#dddddd"),
                       font=ctk.CTkFont(size=11),
                       command=self._manual_check_update).pack(side="right")
 
@@ -584,6 +592,13 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(info2, text="Config folder:", width=130, anchor="w").pack(side="left")
         ctk.CTkLabel(info2, text="~/.turbodownloader/",
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left")
+
+    def _on_appearance_change(self, value: str):
+        import customtkinter as _ctk
+        mode = value.lower()
+        _ctk.set_appearance_mode(mode)
+        self._settings["appearance_mode"] = mode
+        save_settings(self._settings)
 
     def _on_clipboard_toggle(self):
         self._settings["clipboard_monitor"] = self._clipboard_var.get()
@@ -609,13 +624,13 @@ class SettingsPopup(ctk.CTkToplevel):
 
     def _build_remote_section(self, content):
         """Builds the Remote Control section — two side-by-side cards (Server | Client)."""
-        ctk.CTkFrame(content, height=1, fg_color="#3a3a3a").pack(fill="x", padx=20, pady=(0, 8))
+        ctk.CTkFrame(content, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(0, 8))
         self._section(content, "Remote control",
                       "Server: expose this instance over HTTPS.   "
                       "Client: control a remote TurboDownloader instance.")
 
         # ── Browser extension toggle ──────────────────────────────────────────
-        ext_row = ctk.CTkFrame(content, fg_color="#1e1e1e", corner_radius=8)
+        ext_row = ctk.CTkFrame(content, fg_color=("gray90", "#1e1e1e"), corner_radius=8)
         ext_row.pack(fill="x", padx=20, pady=(0, 10))
         self._ext_enabled_var = ctk.BooleanVar(
             value=self._settings.get("extension_enabled", True))
@@ -629,10 +644,10 @@ class SettingsPopup(ctk.CTkToplevel):
         cards.columnconfigure(0, weight=1)
         cards.columnconfigure(1, weight=1)
 
-        srv_card = ctk.CTkFrame(cards, fg_color="#1e1e1e", corner_radius=8)
+        srv_card = ctk.CTkFrame(cards, fg_color=("gray90", "#1e1e1e"), corner_radius=8)
         srv_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
-        cli_card = ctk.CTkFrame(cards, fg_color="#1e1e1e", corner_radius=8)
+        cli_card = ctk.CTkFrame(cards, fg_color=("gray90", "#1e1e1e"), corner_radius=8)
         cli_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         self._populate_server_card(srv_card)
@@ -717,7 +732,7 @@ class SettingsPopup(ctk.CTkToplevel):
         try:
             from remote_server import DEPS_OK, DEPS_MISSING
             if not DEPS_OK:
-                warn = ctk.CTkFrame(p, fg_color="#2a1800", corner_radius=4)
+                warn = ctk.CTkFrame(p, fg_color=("gray90", "#2a1800"), corner_radius=4)
                 warn.pack(fill="x", padx=14, pady=(4, 0))
                 ctk.CTkLabel(warn,
                              text=f"⚠  Missing:\npip install {' '.join(DEPS_MISSING)}",
@@ -751,7 +766,7 @@ class SettingsPopup(ctk.CTkToplevel):
         self._rclient_profile_cb.pack(side="left")
         ctk.CTkButton(rcp, text="💾", width=28, height=26,
                       command=self._save_profile,
-                      fg_color="#1a2a1a", hover_color="#2a3a2a").pack(side="left", padx=(4, 0))
+                      fg_color=("gray82", "#1a2a1a"), hover_color=("gray78", "#2a3a2a")).pack(side="left", padx=(4, 0))
         ctk.CTkButton(rcp, text="🗑", width=28, height=26,
                       command=self._delete_profile,
                       fg_color="#2a1a1a", hover_color="#3a2a2a").pack(side="left", padx=(4, 0))
@@ -820,12 +835,12 @@ class SettingsPopup(ctk.CTkToplevel):
         self._rclient_browse_btn.pack(side="left", padx=(6, 0))
 
         # ── Info note ─────────────────────────────────────────────────────────
-        info = ctk.CTkFrame(p, fg_color="#1a2a1a", corner_radius=4)
+        info = ctk.CTkFrame(p, fg_color=("gray90", "#1a2a1a"), corner_radius=4)
         info.pack(fill="x", padx=14, pady=(2, 6))
         ctk.CTkLabel(info,
                      text="ℹ  Path resolved on remote machine.\n"
                           "   📂 Browse available once connected.",
-                     text_color="#7aaa7a", font=ctk.CTkFont(size=10),
+                     text_color=("#1a6a1a", "#7aaa7a"), font=ctk.CTkFont(size=10),
                      justify="left").pack(padx=8, pady=5, anchor="w")
 
         # ── Status + Connect button ───────────────────────────────────────────
@@ -1175,6 +1190,7 @@ class SettingsPopup(ctk.CTkToplevel):
 
         ctk.CTkButton(btn_frame, text="Annuler",
                       fg_color="transparent", border_width=1, border_color="#444",
+                      text_color=("gray10", "#dddddd"),
                       command=popup.destroy).pack(side="right")
 
     def _on_seg_slider(self, val):
@@ -1284,6 +1300,10 @@ class SettingsPopup(ctk.CTkToplevel):
             self._settings["file_exists_action"] = self._file_exists_var.get()
         if getattr(self, "_check_updates_var", None):
             self._settings["check_updates"] = self._check_updates_var.get()
+
+        # Appearance
+        if getattr(self, "_appearance_var", None):
+            self._settings["appearance_mode"] = self._appearance_var.get().lower()
 
         # System — tray + startup
         if getattr(self, "_minimize_tray_var", None):
@@ -1431,7 +1451,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         self._btn_local.pack(side="left", pady=6)
 
         # ── Search + sort bar (both modes) ────────────────────────────────────
-        filter_bar = ctk.CTkFrame(self, fg_color="#1e1e1e")
+        filter_bar = ctk.CTkFrame(self, fg_color=("gray90", "#1e1e1e"))
         filter_bar.pack(fill="x", padx=0, pady=0)
 
         self._search_var = ctk.StringVar()
@@ -1443,7 +1463,8 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
 
         self._sort_btn = ctk.CTkButton(
             filter_bar, text="A→Z", width=52, height=28,
-            fg_color="transparent", border_width=1, border_color="#333",
+            fg_color="transparent", border_width=1, border_color=("gray65", "#333"),
+            text_color=("gray10", "#dddddd"),
             font=ctk.CTkFont(size=11),
             command=self._toggle_sort)
         self._sort_btn.pack(side="left", padx=(0, 10), pady=5)
@@ -1455,30 +1476,33 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         # ── Remote single-pane ────────────────────────────────────────────────
         self._remote_pane = ctk.CTkFrame(self._content, fg_color="transparent")
 
-        nav = ctk.CTkFrame(self._remote_pane, fg_color="#222222")
+        nav = ctk.CTkFrame(self._remote_pane, fg_color=("gray88", "#222222"))
         nav.pack(fill="x", padx=0, pady=0)
         self._up_btn = ctk.CTkButton(
             nav, text="⬆ Up", width=70, height=28,
-            fg_color="transparent", border_width=1, border_color="#333333",
+            fg_color="transparent", border_width=1, border_color=("gray65", "#333333"),
+            text_color=("gray10", "#dddddd"),
             font=ctk.CTkFont(size=12), command=self._go_up, state="disabled")
         self._up_btn.pack(side="left", padx=(10, 6), pady=6)
         self._path_lbl = ctk.CTkLabel(
-            nav, text="", text_color="#888888",
+            nav, text="", text_color=("gray40", "#888888"),
             font=ctk.CTkFont(size=10), anchor="w")
         self._path_lbl.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=6)
 
-        self._pager = ctk.CTkFrame(self._remote_pane, fg_color="#1a1a1a")
+        self._pager = ctk.CTkFrame(self._remote_pane, fg_color=("gray88", "#1a1a1a"))
         self._prev_btn = ctk.CTkButton(
             self._pager, text="◀ Prev", width=90, height=26,
-            fg_color="transparent", border_width=1, border_color="#333",
+            fg_color="transparent", border_width=1, border_color=("gray65", "#333"),
+            text_color=("gray10", "#dddddd"),
             font=ctk.CTkFont(size=11), command=self._prev_page)
         self._prev_btn.pack(side="left", padx=8, pady=4)
         self._page_lbl = ctk.CTkLabel(
-            self._pager, text="", text_color="#666", font=ctk.CTkFont(size=11))
+            self._pager, text="", text_color=("gray40", "#666"), font=ctk.CTkFont(size=11))
         self._page_lbl.pack(side="left", expand=True)
         self._next_btn = ctk.CTkButton(
             self._pager, text="Next ▶", width=90, height=26,
-            fg_color="transparent", border_width=1, border_color="#333",
+            fg_color="transparent", border_width=1, border_color=("gray65", "#333"),
+            text_color=("gray10", "#dddddd"),
             font=ctk.CTkFont(size=11), command=self._next_page)
         self._next_btn.pack(side="right", padx=8, pady=4)
 
@@ -1489,11 +1513,11 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         self._local_pane = ctk.CTkFrame(self._content, fg_color="transparent")
 
         # Left: drives panel (fixed width 140)
-        left = ctk.CTkFrame(self._local_pane, fg_color="#1a1a1a", width=140)
+        left = ctk.CTkFrame(self._local_pane, fg_color=("gray88", "#1a1a1a"), width=140)
         left.pack(side="left", fill="y", padx=0, pady=0)
         left.pack_propagate(False)
         ctk.CTkLabel(left, text="Drives", font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color="#555").pack(anchor="w", padx=10, pady=(8, 4))
+                     text_color=("gray40", "#555")).pack(anchor="w", padx=10, pady=(8, 4))
         self._drives_scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
         self._drives_scroll.pack(fill="both", expand=True, padx=2, pady=(0, 4))
 
@@ -1501,15 +1525,16 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         right = ctk.CTkFrame(self._local_pane, fg_color="transparent")
         right.pack(side="left", fill="both", expand=True, padx=0, pady=0)
 
-        right_nav = ctk.CTkFrame(right, fg_color="#222222")
+        right_nav = ctk.CTkFrame(right, fg_color=("gray88", "#222222"))
         right_nav.pack(fill="x", padx=0, pady=0)
         self._up_btn_local = ctk.CTkButton(
             right_nav, text="⬆ Up", width=70, height=28,
-            fg_color="transparent", border_width=1, border_color="#333333",
+            fg_color="transparent", border_width=1, border_color=("gray65", "#333333"),
+            text_color=("gray10", "#dddddd"),
             font=ctk.CTkFont(size=12), command=self._go_up_local, state="disabled")
         self._up_btn_local.pack(side="left", padx=(8, 6), pady=6)
         self._path_lbl_local = ctk.CTkLabel(
-            right_nav, text="", text_color="#888888",
+            right_nav, text="", text_color=("gray40", "#888888"),
             font=ctk.CTkFont(size=10), anchor="w")
         self._path_lbl_local.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=6)
 
@@ -1539,7 +1564,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             command=self._confirm_selection)
         self._select_btn.pack(side="left", padx=12, pady=8)
         ctk.CTkButton(foot, text="📁 New folder", width=120,
-                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      fg_color=("gray75", "#3a3a3a"), hover_color=("gray70", "#4a4a4a"),
                       command=self._mkdir).pack(side="left", padx=(0, 8), pady=8)
         ctk.CTkButton(foot, text="Cancel", width=100,
                       fg_color="#5a5a5a",
@@ -1677,8 +1702,8 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         for drv in drives:
             ctk.CTkButton(
                 self._drives_scroll, text=drv, anchor="w",
-                fg_color="transparent", hover_color="#2a3a4a",
-                text_color="#aaaaaa", font=ctk.CTkFont(size=12),
+                fg_color="transparent", hover_color=("gray80", "#2a3a4a"),
+                text_color=("gray20", "#aaaaaa"), font=ctk.CTkFont(size=12),
                 height=30,
                 command=lambda p=drv: self._navigate_local_tree(p, self._fetch_gen + 1)
             ).pack(fill="x", padx=2, pady=1)
@@ -1792,8 +1817,8 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         btn = ctk.CTkButton(
             container, text=label, anchor="w",
             fg_color="transparent",
-            hover_color="#1a2a3a" if is_dir else "#1a1a1a",
-            text_color="#cccccc" if is_dir else "#555555",
+            hover_color=("gray80", "#1a2a3a") if is_dir else ("gray85", "#1a1a1a"),
+            text_color=("gray10", "#cccccc") if is_dir else ("gray50", "#555555"),
             font=ctk.CTkFont(size=12), height=28,
             command=lambda p=path, d=is_dir: on_click(p, d),
         )
@@ -1802,7 +1827,7 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
     def _update_dest_display(self):
         if self._current:
             short = self._current if len(self._current) <= 60 else "…" + self._current[-57:]
-            self._dest_lbl.configure(text=f"📁 {short}", text_color="#7aaa7a")
+            self._dest_lbl.configure(text=f"📁 {short}", text_color=("#1a6a1a", "#7aaa7a"))
             self._dest_frame.configure(fg_color="#0d1f0d")
             self._select_btn.configure(state="normal")
         else:
@@ -1817,26 +1842,25 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         """Create a new subfolder in the current directory."""
         if not self._current:
             return
-        import customtkinter as _ctk
-        dialog = _ctk.CTkInputDialog(text="Folder name:", title="New folder")
-        name = dialog.get_input()
+        from tree_popup import _ask_folder_name
+        name = _ask_folder_name(self)
         if not name:
             return
         name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
         if not name:
             return
         if self._mode == "remote":
-            import os as _os
             sep = "/" if "/" in self._current else "\\"
             new_path = self._current.rstrip("/\\") + sep + name
             result = self._client.mkdir(new_path)
             if result and result.get("ok"):
-                self._navigate(self._current)
+                self._navigate(new_path)
         else:
             import os as _os
             try:
-                _os.makedirs(_os.path.join(self._current, name), exist_ok=True)
-                self._navigate_local_tree(self._current, self._fetch_gen + 1)
+                new_path = _os.path.join(self._current, name)
+                _os.makedirs(new_path, exist_ok=True)
+                self._navigate_local_tree(new_path, self._fetch_gen + 1)
             except Exception:
                 pass
 

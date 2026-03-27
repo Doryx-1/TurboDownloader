@@ -2,7 +2,7 @@
 
 > A powerful desktop download manager built for Jellyfin, Plex, and Emby server admins - with remote control, browser extension, and bulk media downloading built in.
 
-![Version](https://img.shields.io/badge/version-2.7.6-blue)
+![Version](https://img.shields.io/badge/version-2.7.7-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
 

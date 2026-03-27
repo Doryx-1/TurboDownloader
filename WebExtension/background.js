@@ -185,17 +185,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 // ── Download interception ─────────────────────────────────────────────────────
 
 chrome.downloads.onCreated.addListener(async (item) => {
-  const s = await getSettings();
-  if (!s.intercept) return;
-
-  // item.filename is empty at creation — check url instead
+  // Extract extension synchronously before any await, so the cancel
+  // fires as early as possible (getSettings is async — ~a few ms delay).
+  let ext;
   try {
     const path = new URL(item.url).pathname.toLowerCase();
-    const ext  = "." + path.split(".").pop().split("?")[0];
-    if (!ext || !s.extensions.includes(ext)) return;
+    ext = "." + path.split(".").pop().split("?")[0];
+    if (!ext || ext === ".") return;
   } catch { return; }
 
+  const s = await getSettings();
+  if (!s.intercept || !s.extensions.includes(ext)) return;
+
+  // Cancel the browser download and erase it from the download shelf
+  // before handing the URL to TurboDownloader.
   chrome.downloads.cancel(item.id);
+  chrome.downloads.erase({ id: item.id });
   await sendInteractive([item.url]);
 });
 
