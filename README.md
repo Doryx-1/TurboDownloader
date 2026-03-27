@@ -2,7 +2,7 @@
 
 > A powerful desktop download manager built for Jellyfin, Plex, and Emby server admins - with remote control, browser extension, and bulk media downloading built in.
 
-![Version](https://img.shields.io/badge/version-2.7.5-blue)
+![Version](https://img.shields.io/badge/version-2.7.6-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
 
@@ -91,18 +91,18 @@ On the machine that will receive and run the downloads (your media server):
 2. Toggle the server **on**
 3. Set a **username** and **password**
 4. Click **Generate now** to create the SSL certificate
-5. Open port **9988** in Windows Firewall:
+5. Open port **9989** in Windows Firewall:
    ```
-   netsh advfirewall firewall add rule name="TurboDownloader Remote" dir=in action=allow protocol=TCP localport=9988
+   netsh advfirewall firewall add rule name="TurboDownloader Remote" dir=in action=allow protocol=TCP localport=9989
    ```
-6. The sidebar shows `📡 Server mode - listening on :9988` when active
+6. The sidebar shows `📡 Server mode - listening on :9989` when active
 
 ### Connecting as a client
 
 On the machine you want to control from (your laptop, another PC):
 
 1. Open **Settings > Remote control - Client**
-2. Enter the server's **Host / IP**, **Port** (`9988`), **Username**, and **Password**
+2. Enter the server's **Host / IP**, **Port** (`9989`), **Username**, and **Password**
 3. Optionally set a **Remote dest.** - click **Browse...** once connected to navigate the server's filesystem and pick a default destination folder
 4. Click **Connect** - the sidebar shows `Client mode - connected to host:port`
 
@@ -144,14 +144,12 @@ Client and server must be on the same version. If they differ, the connection is
 
 ### Configuration
 
-1. Make sure TurboDownloader is running with **Remote Server enabled** (see above)
+1. Make sure TurboDownloader is running (the extension listener starts automatically)
 2. Click the extension icon > **Settings**
-3. Enter:
-   - **Host**: `127.0.0.1` if TurboDownloader is on the same machine, or the server's IP
-   - **Port**: `9988`
-   - **Username** and **Password**: same as configured in TurboDownloader
+3. Optionally set a default destination folder
 4. Click **Test connection** - you should see `Connected successfully`
-5. Click **Save**
+
+No credentials or port configuration needed — authentication is handled automatically via a local token.
 
 ### Usage
 
@@ -178,7 +176,8 @@ When you send a link, TurboDownloader comes to the front and opens its file tree
 | Extensions | Which file extensions to detect during crawl |
 | Notifications | Enable/disable batch completion desktop alerts |
 | Check for updates | Automatic update check at startup |
-| Remote Server | Enable HTTPS server, set credentials, configure token lifetime, generate SSL certificate |
+| Browser extension listener | Enable/disable the local HTTP listener used by the browser extension (on by default, no configuration required) |
+| Remote Server | Enable HTTPS server on port 9989, set credentials, configure token lifetime, generate SSL certificate |
 | Remote Client | Connect to a remote TurboDownloader instance, browse remote filesystem |
 
 Config, history, and SSL certificates are stored in `~/.turbodownloader/`.
@@ -187,7 +186,7 @@ Config, history, and SSL certificates are stored in `~/.turbodownloader/`.
 
 ## Security
 
-v2.7.5 includes 9 security fixes:
+v2.7.5+ includes 9 security fixes:
 
 | # | Area | Fix |
 |---|---|---|
