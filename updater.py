@@ -331,6 +331,15 @@ def _install_silent(setup_path: pathlib.Path, app):
     """Launches the installer with /VERYSILENT flags and quits the app."""
     try:
         import subprocess
+
+        # Remove Zone.Identifier (Mark of the Web) so Windows SmartScreen
+        # does not silently block the installer when launched from a background thread.
+        try:
+            zone_file = pathlib.Path(str(setup_path) + ":Zone.Identifier")
+            zone_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
         DETACHED  = 0x00000008
         NEW_GROUP = 0x00000200
         subprocess.Popen(
@@ -338,7 +347,8 @@ def _install_silent(setup_path: pathlib.Path, app):
             creationflags=DETACHED | NEW_GROUP,
             close_fds=True,
         )
-        app.after(1000, app._tray_quit)
+        # Give the installer enough time to start before we exit
+        app.after(3000, app._tray_quit)
     except Exception as e:
         _log.error("Silent install launch failed: %s", e)
 
@@ -347,6 +357,14 @@ def _install(setup_path: pathlib.Path, popup, app):
     """Launches the installer silently and quits TurboDownloader."""
     try:
         popup.destroy()
+
+        # Remove Zone.Identifier (Mark of the Web) to avoid SmartScreen blocking.
+        try:
+            zone_file = pathlib.Path(str(setup_path) + ":Zone.Identifier")
+            zone_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
         DETACHED  = 0x00000008
         NEW_GROUP = 0x00000200
         subprocess.Popen(
@@ -354,6 +372,6 @@ def _install(setup_path: pathlib.Path, popup, app):
             creationflags=DETACHED | NEW_GROUP,
             close_fds=True,
         )
-        app.after(800, app._tray_quit)
+        app.after(3000, app._tray_quit)
     except Exception as e:
         _log.error("Install launch failed: %s", e)
