@@ -1,13 +1,18 @@
 import os
 import sys
 import time
+import json
 import queue
+import pathlib
 import threading
 from collections import deque
 from typing import Optional
 from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from logger import get_logger
+
+_CONFIG_DIR = pathlib.Path.home() / ".turbodownloader"
+_QUEUE_FILE = _CONFIG_DIR / "queue.json"
 
 _log = get_logger("downloader")
 import requests
@@ -110,6 +115,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self._start_remote_if_enabled()
 
         self._build_ui()
+        self.after(100, self._restore_queue)
 
         # ── Tray icon ─────────────────────────────────────────────────────────
         self._tray = tray_module.TrayIcon(self)
@@ -173,17 +179,92 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.focus_force()
 
     def _tray_quit(self):
-        """Quit completely — stop server, cleanup, destroy."""
+        """Quit completely — save queue, stop server, cleanup, destroy."""
+        self._save_queue()   # save before stopping workers
         try:
             if self._remote_server:
                 self._remote_server.stop()
             if self._remote_client:
                 self._remote_client.disconnect()
             self.stop_all_event.set()
+            for it in self.items.values():
+                it.cancel_event.set()   # stop workers cleanly without deleting .part files
+            if self.executor:
+                try:
+                    self.executor.shutdown(wait=False, cancel_futures=False)
+                except TypeError:
+                    self.executor.shutdown(wait=False)
             self._tray.stop()
         except Exception:
             pass
         self.destroy()
+
+    def _save_queue(self):
+        """Persists waiting/downloading items to disk before quit."""
+        saveable = [
+            it.to_dict()
+            for it in self.items.values()
+            if it.state in ("waiting", "paused", "downloading")
+            and not it.from_remote
+        ]
+        try:
+            _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            if saveable:
+                with open(_QUEUE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(saveable, f, indent=2, ensure_ascii=False)
+            elif _QUEUE_FILE.exists():
+                _QUEUE_FILE.unlink()
+        except Exception as e:
+            print(f"[queue] save error: {e}")
+
+    def _restore_queue(self):
+        """Reloads the saved queue after startup."""
+        if not _QUEUE_FILE.exists():
+            return
+        try:
+            data = json.loads(_QUEUE_FILE.read_text(encoding="utf-8"))
+            count = 0
+            for d in data:
+                it = DownloadItem.from_dict(d)
+                if not os.path.isdir(os.path.dirname(it.dest_path)):
+                    continue
+                idx = self._next_idx
+                self._next_idx += 1
+                with self._items_lock:
+                    self.items[idx] = it
+                self._add_row_for_item(idx, it)
+                count += 1
+            if count:
+                self.after(300, lambda n=count: self._show_restore_banner(n))
+        except Exception as e:
+            print(f"[queue] restore error: {e}")
+        finally:
+            try:
+                _QUEUE_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _show_restore_banner(self, count: int):
+        """Shows a brief info banner when downloads are restored from queue."""
+        import customtkinter as _ctk
+        banner = _ctk.CTkFrame(
+            self, fg_color=("#d8e8f8", "#1a2a3a"),
+            corner_radius=0, border_width=1,
+            border_color=("#4a8aaa", "#1f4a6a"))
+        banner.place(relx=0, rely=0, relwidth=1, anchor="nw")
+        _ctk.CTkLabel(
+            banner,
+            text=f"↺  {count} download(s) restored from previous session — click Start to resume",
+            font=_ctk.CTkFont(size=11),
+            text_color=("#1a4a6a", "#7ab4d4"),
+        ).pack(side="left", padx=12, pady=6)
+        _ctk.CTkButton(
+            banner, text="✕", width=24, height=24,
+            fg_color="transparent", border_width=0,
+            text_color=("#1a4a6a", "#7ab4d4"),
+            command=banner.destroy,
+        ).pack(side="right", padx=8)
+        self.after(8000, lambda: banner.destroy() if banner.winfo_exists() else None)
 
     def _show_for_popup(self):
         """
@@ -515,6 +596,20 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             top_bar, text="", text_color="#555555",
             font=ctk.CTkFont(size=11))
         self._total_count_lbl.pack(side="left", padx=(0, 16), pady=12)
+
+        # ── Sort dropdown ──────────────────────────────────────────────────────
+        self._sort_var = ctk.StringVar(value="Recent")
+        ctk.CTkOptionMenu(
+            top_bar,
+            variable=self._sort_var,
+            values=["Recent", "Name A→Z", "Name Z→A", "Status", "Size ↓"],
+            width=130, height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color=("gray85", "#2a2a2a"),
+            button_color=("gray75", "#333333"),
+            text_color=("gray10", "#dddddd"),
+            command=self._apply_sort_order,
+        ).pack(side="left", padx=(4, 0), pady=10)
 
         # Bouton Clear finished — bas droite du header
         ctk.CTkButton(top_bar, text="🗑 Clear", width=80, height=28,

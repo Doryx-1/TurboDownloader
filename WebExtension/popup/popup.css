@@ -224,6 +224,36 @@ body {
 .send-btn.success { background: #2e6b3e; }
 .send-btn.error   { background: #8B0000; }
 
+/* ── Active downloads ── */
+.dl-row {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.dl-name {
+  display: block;
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+.dl-bar-bg {
+  background: #333;
+  border-radius: 2px;
+  height: 4px;
+  margin: 2px 0;
+}
+.dl-bar-fill {
+  background: #1f6aa5;
+  height: 4px;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.dl-meta {
+  color: #666;
+  font-size: 10px;
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar       { width: 4px; }
 ::-webkit-scrollbar-track { background: #1a1a1a; }

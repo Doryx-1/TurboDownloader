@@ -64,4 +64,14 @@ class SpeedTrackerMixin:
                     else:
                         self._taskbar.set_progress(ratio)
 
+        # ── Watchdog : stall detection ────────────────────────────────────
+        STALL_TIMEOUT = 60  # seconds without any data received
+        _now = time.time()
+        for _idx, _it in list(self.items.items()):
+            if _it.state == "downloading":
+                if _now - getattr(_it, "last_activity", _now) > STALL_TIMEOUT:
+                    _it.error_msg = "Stalled — no data for 60s (retrying…)"
+                    _it.cancel_event.set()
+                    self.ui(self._update_row_ui, _idx)
+
         self.after(1000, self._tick_global_speed)

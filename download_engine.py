@@ -226,6 +226,7 @@ class DownloadEngineMixin:
 
                         f.write(chunk)
                         n = len(chunk)
+                        it.last_activity = time.time()   # watchdog stall detection
                         seg.downloaded += n
 
                         with seg_lock:
@@ -399,6 +400,7 @@ class DownloadEngineMixin:
                         continue
                     f.write(chunk)
                     n = len(chunk)
+                    it.last_activity = time.time()   # watchdog stall detection
                     it.downloaded += n
                     it.speed_window.append((time.time(), n))
                     self._record_bytes(n)

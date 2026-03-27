@@ -1,5 +1,6 @@
 """row_manager.py — RowManagerMixin for TurboDownloader."""
 import os
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
@@ -59,6 +60,8 @@ class RowManagerMixin:
 
         self.rows[idx] = row
         self._apply_filter_to_row(idx)
+        if len(self.rows) > 1:
+            self._apply_sort_order()
 
     def _add_remote_shadow_row(self, url: str, dest: str,
                                server_idx: int = None) -> int:
@@ -108,6 +111,7 @@ class RowManagerMixin:
             on_cancel=_remote_cancel,
             on_remove=_remote_remove,
             on_priority=None,
+            on_context_menu=self._make_shadow_context_menu(shadow_idx),
         )
         # Buttons active — controls are wired to server API
         row.pause_btn.configure(state="normal")
@@ -123,6 +127,7 @@ class RowManagerMixin:
             "url":        url,
             "server_idx": server_idx,
             "state":      "waiting",
+            "created_at": time.time(),   # pour watchdog fantôme
         }
         row.frame.pack(fill="x", pady=3, padx=4)
         self._refresh_filter_counts()
@@ -134,6 +139,30 @@ class RowManagerMixin:
         if shadow:
             shadow["row"].frame.destroy()
         self._refresh_filter_counts()
+
+    def _make_shadow_context_menu(self, shadow_idx: int):
+        """Context menu for shadow (remote) rows."""
+        def handler(event):
+            shadow = self._shadow_rows.get(shadow_idx)
+            if not shadow:
+                return
+            menu = tk.Menu(self, tearoff=0, bg="#2a2a2a", fg="#dddddd",
+                           activebackground="#1f6aa5", activeforeground="#ffffff",
+                           relief="flat", bd=0)
+            menu.add_command(
+                label="📋  Copier l'URL",
+                command=lambda u=shadow["url"]: (
+                    self.clipboard_clear(), self.clipboard_append(u)))
+            menu.add_separator()
+            menu.add_command(
+                label="💀  Force remove",
+                command=lambda: self._force_remove_shadow(shadow_idx))
+            menu.tk_popup(event.x_root, event.y_root)
+        return handler
+
+    def _force_remove_shadow(self, shadow_idx: int):
+        """Force-removes a shadow row (even if stuck/unreachable)."""
+        self._remove_shadow_row(shadow_idx)
 
     def cancel_one(self, idx: int):
         with self._items_lock:
@@ -297,6 +326,37 @@ class RowManagerMixin:
             else:
                 menu.add_command(label="✕  Effacer la ligne", state="disabled")
 
+            menu.add_separator()
+
+            # ── Copier l'URL — toujours actif ─────────────────────────────────
+            menu.add_command(
+                label="📋  Copier l'URL",
+                command=lambda u=item.url: (
+                    self.clipboard_clear(), self.clipboard_append(u)))
+
+            # ── Relancer ──────────────────────────────────────────────────────
+            if item.state in ("done", "error", "canceled"):
+                menu.add_command(
+                    label="↺  Relancer",
+                    command=lambda u=item.url: self._relaunch_download(u))
+            else:
+                menu.add_command(label="↺  Relancer", state="disabled")
+
+            # ── Renommer ──────────────────────────────────────────────────────
+            if item.state == "done" and is_local and os.path.isfile(item.dest_path):
+                menu.add_command(
+                    label="✏  Renommer",
+                    command=lambda i=idx: self._rename_file(i))
+            else:
+                menu.add_command(label="✏  Renommer", state="disabled")
+
+            menu.add_separator()
+
+            # ── Force remove — toujours actif ─────────────────────────────────
+            menu.add_command(
+                label="💀  Force remove",
+                command=lambda i=idx: self._force_remove_local(i))
+
             menu.tk_popup(event.x_root, event.y_root)
 
         return handler
@@ -321,3 +381,79 @@ class RowManagerMixin:
             _log.info("Deleted file: %s", path)
         except OSError as e:
             messagebox.showerror("Erreur", f"Impossible de supprimer le fichier :\n{e}", parent=self)
+
+    def _relaunch_download(self, url: str):
+        """Re-injects a URL into the input box and starts the download."""
+        try:
+            self.url_box.delete("1.0", "end")
+            self.url_box.insert("1.0", url)
+            self.start_downloads()
+        except Exception:
+            pass
+
+    def _rename_file(self, idx: int):
+        """Renames the downloaded file on disk and updates the row."""
+        from tree_popup import _ask_folder_name
+        it = self.items.get(idx)
+        if not it:
+            return
+        base, ext = os.path.splitext(it.filename)
+        new_base = _ask_folder_name(self, title="Rename file", default=base)
+        if not new_base or new_base == base:
+            return
+        new_name = new_base + ext
+        new_path = os.path.join(os.path.dirname(it.dest_path), new_name)
+        try:
+            os.rename(it.dest_path, new_path)
+            it.filename  = new_name
+            it.dest_path = new_path
+            row = self.rows.get(idx)
+            if row:
+                row.name_lbl.configure(text=new_name)
+        except OSError as e:
+            messagebox.showerror("Rename error", str(e), parent=self)
+
+    def _force_remove_local(self, idx: int):
+        """Force-removes any row regardless of state. Cancels if still active."""
+        it = self.items.get(idx)
+        if it:
+            it.cancel_event.set()
+            it.state = "canceled"
+        row = self.rows.get(idx)
+        if row:
+            row.frame.destroy()
+        self.rows.pop(idx, None)
+        self.items.pop(idx, None)
+        self._refresh_filter_counts()
+
+    def _apply_sort_order(self, _=None):
+        """Re-orders download rows according to the current sort setting."""
+        key = getattr(self, "_sort_var", None)
+        key = key.get() if key else "Recent"
+
+        STATE_ORDER = {
+            "downloading": 0, "waiting": 1, "paused": 2, "moving": 3,
+            "done": 4, "error": 5, "canceled": 6, "skipped": 7,
+        }
+
+        def sort_key(idx):
+            it = self.items.get(idx)
+            if not it:
+                return (9, 0, "")
+            if key == "Name A→Z":
+                return (0, 0, it.filename.lower())
+            if key == "Name Z→A":
+                return (0, 0, it.filename.lower())
+            if key == "Status":
+                return (STATE_ORDER.get(it.state, 9), 0, "")
+            if key == "Size ↓":
+                return (0, -(it.total_size or 0), "")
+            return (0, -idx, "")   # "Recent" = last added on top
+
+        reverse = (key == "Name Z→A")
+        ordered = sorted(self.rows.keys(), key=sort_key, reverse=reverse)
+
+        for idx in ordered:
+            row = self.rows[idx]
+            row.frame.pack_forget()
+            row.frame.pack(fill="x", pady=3, padx=4)

@@ -51,18 +51,23 @@ def _center_on_master(window, master):
     window.geometry(f"+{max(0,x)}+{max(0,y)}")
 
 
-def _ask_folder_name(parent) -> str | None:
-    """Custom centered input dialog for folder name. Returns the name or None."""
+def _ask_folder_name(parent, title: str = "New folder",
+                     default: str = "") -> str | None:
+    """Custom centered input dialog. Returns the entered string or None."""
     result = [None]
 
     dlg = ctk.CTkToplevel(parent)
-    dlg.title("New folder")
+    dlg.title(title)
     dlg.resizable(False, False)
     dlg.grab_set()
 
-    ctk.CTkLabel(dlg, text="Folder name:").pack(padx=20, pady=(16, 4))
+    label_text = "Folder name:" if title == "New folder" else f"{title}:"
+    ctk.CTkLabel(dlg, text=label_text).pack(padx=20, pady=(16, 4))
     entry = ctk.CTkEntry(dlg, width=220)
     entry.pack(padx=20, pady=(0, 12))
+    if default:
+        entry.insert(0, default)
+        entry.select_range(0, "end")
     entry.focus_set()
 
     btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
