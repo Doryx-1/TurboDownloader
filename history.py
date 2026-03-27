@@ -104,7 +104,7 @@ class HistoryPopup(ctk.CTkToplevel):
         self._count_lbl.pack(side="right")
 
         # ── En-têtes colonnes ──────────────────────────────────────────
-        hdr = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        hdr = ctk.CTkFrame(self, fg_color=("gray85", "#2b2b2b"))
         hdr.pack(fill="x", padx=16, pady=(0, 2))
         for text, w in [("File", 320), ("Size", 90),
                          ("Duration", 80), ("Date", 150), ("", 130)]:
@@ -119,7 +119,7 @@ class HistoryPopup(ctk.CTkToplevel):
         self._populate()
 
         # ── Bas ────────────────────────────────────────────────────────
-        bot = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        bot = ctk.CTkFrame(self, fg_color=("gray85", "#2b2b2b"))
         bot.pack(fill="x", padx=0, pady=0)
         ctk.CTkButton(bot, text="Close", width=110, fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=16, pady=10)
@@ -180,7 +180,7 @@ class HistoryPopup(ctk.CTkToplevel):
         ).pack(side="left", padx=8)
 
         # Thin separator
-        ctk.CTkFrame(self._scroll, height=1, fg_color="#333333").pack(fill="x")
+        ctk.CTkFrame(self._scroll, height=1, fg_color=("gray75", "#333333")).pack(fill="x")
 
     # ---------------------------------------------------------------- Actions
 

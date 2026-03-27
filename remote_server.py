@@ -374,8 +374,18 @@ class RemoteServer:
                     access_log=False,
                 )
                 self._local_server = uvicorn.Server(local_cfg)
+
+                def _run_local():
+                    try:
+                        import asyncio as _asyncio
+                        _asyncio.set_event_loop(_asyncio.new_event_loop())
+                        self._local_server.run()
+                    except Exception as _e:
+                        import traceback as _tb
+                        print(f"[remote] Extension server CRASHED: {_e}\n{_tb.format_exc()}")
+
                 self._local_thread = threading.Thread(
-                    target=self._local_server.run,
+                    target=_run_local,
                     daemon=True,
                     name="TurboLocalServer",
                 )

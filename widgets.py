@@ -18,16 +18,15 @@ class DownloadRow:
 
     def __init__(self, parent, name: str, on_pause, on_cancel, on_remove,
                  on_priority=None, on_context_menu=None):
-        self.frame = ctk.CTkFrame(parent, fg_color="#1e1e1e",
+        self.frame = ctk.CTkFrame(parent, fg_color=("gray92", "#1e1e1e"),
                                   corner_radius=8, border_width=1,
-                                  border_color="#2a2a2a")
+                                  border_color=("gray75", "#2a2a2a"))
         self.frame.pack(fill="x", pady=3, padx=4)
 
         # ── Ligne 0 : nom + status + boutons ─────────────────────────────────
         self.name_lbl = ctk.CTkLabel(
             self.frame, text=name, anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#dddddd")
+            font=ctk.CTkFont(size=12, weight="bold"))
         self.name_lbl.grid(row=0, column=0, padx=(10, 6), pady=(8, 2), sticky="ew")
 
         self.status = ctk.CTkLabel(
@@ -48,8 +47,9 @@ class DownloadRow:
         self.pause_btn = ctk.CTkButton(
             self.frame, text="⏸", width=32, height=28,
             font=ctk.CTkFont(size=14),
-            fg_color="transparent", border_width=1, border_color="#3a3a3a",
-            hover_color="#2a2a2a", command=on_pause)
+            fg_color="transparent", border_width=1,
+            border_color=("gray60", "#3a3a3a"),
+            hover_color=("gray80", "#2a2a2a"), command=on_pause)
         self.pause_btn.grid(row=0, column=3, padx=3, pady=(8, 2))
 
         self.cancel_btn = ctk.CTkButton(
@@ -62,15 +62,16 @@ class DownloadRow:
         self.remove_btn = ctk.CTkButton(
             self.frame, text="🗑", width=32, height=28,
             font=ctk.CTkFont(size=12),
-            fg_color="transparent", border_width=1, border_color="#333333",
-            hover_color="#2a2a2a",
+            fg_color="transparent", border_width=1,
+            border_color=("gray60", "#333333"),
+            hover_color=("gray80", "#2a2a2a"),
             command=on_remove, state="disabled")
         self.remove_btn.grid(row=0, column=5, padx=(3, 10), pady=(8, 2))
 
         # ── Ligne 1 : barre de progression ───────────────────────────────────
         self.progress = ctk.CTkProgressBar(
             self.frame, height=6, corner_radius=3,
-            progress_color="#1f6aa5", fg_color="#2a2a2a")
+            progress_color="#1f6aa5", fg_color=("gray80", "#2a2a2a"))
         self.progress.set(0)
         self.progress.grid(row=1, column=0, columnspan=6,
                            padx=10, pady=(2, 3), sticky="ew")
@@ -78,12 +79,12 @@ class DownloadRow:
         # ── Ligne 2 : vitesse + ETA ───────────────────────────────────────────
         self.speed_lbl = ctk.CTkLabel(
             self.frame, text="–", width=110, anchor="w",
-            font=ctk.CTkFont(size=11), text_color="#555555")
+            font=ctk.CTkFont(size=11), text_color=("gray40", "#888888"))
         self.speed_lbl.grid(row=2, column=0, padx=(10, 4), pady=(0, 8), sticky="w")
 
         self.eta_lbl = ctk.CTkLabel(
             self.frame, text="ETA –", width=120, anchor="w",
-            font=ctk.CTkFont(size=11), text_color="#555555")
+            font=ctk.CTkFont(size=11), text_color=("gray40", "#888888"))
         self.eta_lbl.grid(row=2, column=1, padx=4, pady=(0, 8), sticky="w")
 
         self.frame.grid_columnconfigure(0, weight=1)
@@ -130,7 +131,7 @@ class PlaylistGroupRow:
         self._expanded = True
         self._child_rows: dict = {}
 
-        self.frame = ctk.CTkFrame(parent, fg_color="#181818",
+        self.frame = ctk.CTkFrame(parent, fg_color=("gray92", "#181818"),
                                   corner_radius=8, border_width=1,
                                   border_color="#1f4a7a")
         self.frame.pack(fill="x", pady=4, padx=4)
@@ -143,18 +144,18 @@ class PlaylistGroupRow:
             hdr, text="▼", width=26, height=26,
             font=ctk.CTkFont(size=11),
             fg_color="transparent", border_width=0,
-            hover_color="#2a2a2a", command=self._toggle)
+            hover_color=("gray80", "#2a2a2a"), command=self._toggle)
         self._toggle_btn.pack(side="left", padx=(0, 4))
 
         short = title[:55] + "…" if len(title) > 55 else title
         ctk.CTkLabel(hdr, text=f"🎵 {short}", anchor="w",
                      font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color="#7ab8e8").pack(side="left", fill="x", expand=True)
+                     text_color=("#1a4a8a", "#7ab8e8")).pack(side="left", fill="x", expand=True)
 
         self._count_lbl = ctk.CTkLabel(hdr, text=f"0 / {total}",
                                         width=70, anchor="e",
                                         font=ctk.CTkFont(size=11),
-                                        text_color="#555555")
+                                        text_color="gray")
         self._count_lbl.pack(side="right", padx=4)
 
         if on_cancel_all:
@@ -169,7 +170,8 @@ class PlaylistGroupRow:
             self._remove_btn = ctk.CTkButton(
                 hdr, text="🗑", width=28, height=26,
                 fg_color="transparent", border_width=1,
-                border_color="#333333", hover_color="#2a2a2a",
+                border_color=("gray60", "#333333"),
+                hover_color=("gray80", "#2a2a2a"),
                 command=on_remove_all, state="disabled")
             self._remove_btn.pack(side="right", padx=2)
 
@@ -177,7 +179,7 @@ class PlaylistGroupRow:
         self._progress = ctk.CTkProgressBar(self.frame, height=4,
                                              corner_radius=2,
                                              progress_color="#1f6aa5",
-                                             fg_color="#2a2a2a")
+                                             fg_color=("gray80", "#2a2a2a"))
         self._progress.set(0)
         self._progress.pack(fill="x", padx=8, pady=(0, 4))
 
