@@ -22,18 +22,25 @@ class RemoteTrackerMixin:
         self._settings["dest_history"] = history[:10]
 
     def _start_remote_if_enabled(self):
-        """Starts the remote control server if enabled in settings.
-        Also starts the local extension server (always) and auto-connects as client."""
+        """Starts servers based on settings:
+        - Extension HTTP server (127.0.0.1:9988) if extension_enabled (default True)
+        - Remote HTTPS server (0.0.0.0:9989) if remote_enabled + credentials set
+        Also auto-connects as client if configured."""
 
         # ── Server ────────────────────────────────────────────────────────────
-        if self._settings.get("remote_enabled", False):
-            if self._settings.get("remote_username") and self._settings.get("remote_password_hash"):
-                self._remote_server = remote_server.RemoteServer(self, self._settings)
-                ok = self._remote_server.start()
-                if not ok:
-                    self._remote_server = None
-            else:
-                print("[remote] Skipping server start — username or password not configured")
+        ext_on    = self._settings.get("extension_enabled", True)
+        remote_on = self._settings.get("remote_enabled", False)
+
+        if remote_on and not (self._settings.get("remote_username") and
+                              self._settings.get("remote_password_hash")):
+            print("[remote] Skipping remote HTTPS server — username or password not configured")
+            remote_on = False
+
+        if ext_on or remote_on:
+            self._remote_server = remote_server.RemoteServer(self, self._settings)
+            ok = self._remote_server.start()
+            if not ok:
+                self._remote_server = None
 
         # ── Client auto-connect ───────────────────────────────────────────────
         if self._settings.get("remote_client_autoconnect", False):
@@ -77,16 +84,27 @@ class RemoteTrackerMixin:
 
     def _apply_remote_settings(self):
         """
-        Called by on_settings_save — restarts the server if the enabled flag changed.
+        Called by on_settings_save — starts/stops servers as needed.
+        Server should run if extension_enabled OR remote_enabled.
+        Restarts if remote_enabled changed (HTTPS component must be added/removed).
         """
-        enabled = self._settings.get("remote_enabled", False)
-        running = self._remote_server is not None and self._remote_server.is_running
+        ext_on     = self._settings.get("extension_enabled", True)
+        remote_on  = self._settings.get("remote_enabled", False)
+        should_run = ext_on or remote_on
+        running    = self._remote_server is not None and self._remote_server.is_running
 
-        if enabled and not running:
-            self._start_remote_if_enabled()
-        elif not enabled and running:
+        if not should_run and running:
             self._remote_server.stop()
             self._remote_server = None
+        elif should_run and not running:
+            self._start_remote_if_enabled()
+        elif should_run and running:
+            # Restart only if the HTTPS component needs to change state
+            https_running = self._remote_server._remote_server is not None
+            if remote_on != https_running:
+                self._remote_server.stop()
+                self._remote_server = None
+                self._start_remote_if_enabled()
 
         self._update_remote_status_bar()
 
@@ -100,7 +118,7 @@ class RemoteTrackerMixin:
 
         # ── Server bar ───────────────────────────────────────────────────────
         if srv_running:
-            port = self._settings.get("remote_port", 9988)
+            port = self._settings.get("remote_port", 9989)
             self._remote_srv_lbl.configure(
                 text=f"📡  Server — listening on :{port}")
             self._remote_srv_bar.pack(fill="x", padx=16, pady=(0, 4))
@@ -110,7 +128,7 @@ class RemoteTrackerMixin:
         # ── Client bar ───────────────────────────────────────────────────────
         if cli_connected:
             host = self._settings.get("remote_client_host", "?")
-            port = self._settings.get("remote_client_port", 9988)
+            port = self._settings.get("remote_client_port", 9989)
             self._remote_cli_lbl.configure(
                 text=f"🔗  Client — connected to {host}:{port}")
             self._remote_cli_bar.pack(fill="x", padx=16, pady=(0, 8))

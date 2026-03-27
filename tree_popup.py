@@ -240,6 +240,9 @@ class FileTreePopup(ctk.CTkToplevel):
                       command=self._cancel).pack(side="right", padx=(8, 0))
         ctk.CTkButton(bot, text="⬇  Start download", fg_color="#1f6aa5",
                       command=self._confirm).pack(side="right")
+        ctk.CTkButton(bot, text="📁 New folder", width=130, fg_color="#3a3a3a",
+                      hover_color="#4a4a4a",
+                      command=self._mkdir_dest).pack(side="left")
 
     def _create_row(self, node: FileTreeNode):
         """Crée une ligne plate pour ce nœud, directement in _scroll."""
@@ -580,6 +583,23 @@ class FileTreePopup(ctk.CTkToplevel):
 
         self.bind("<Button-1>", _on_click_outside, add=True)
         menu.bind("<Destroy>", lambda e: self.unbind("<Button-1>"))
+
+    def _mkdir_dest(self):
+        """Create a new subfolder inside the current destination folder."""
+        dest = self._dest_entry.get().strip()
+        if not dest:
+            return
+        dialog = ctk.CTkInputDialog(text="Folder name:", title="New folder")
+        name = dialog.get_input()
+        if not name:
+            return
+        name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
+        if not name:
+            return
+        try:
+            os.makedirs(os.path.join(dest, name), exist_ok=True)
+        except Exception:
+            pass
 
     def _cancel(self):
         """Close without selection — unblocks popup_done."""

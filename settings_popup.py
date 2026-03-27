@@ -56,6 +56,46 @@ DEFAULT_EXTENSIONS = {
 }
 
 
+def _version_tuple(v: str) -> tuple:
+    """Converts a version string like '2.7.6' to a comparable tuple."""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except Exception:
+        return (0, 0, 0)
+
+
+def _migrate_settings(settings: dict) -> bool:
+    """
+    Applies per-version migrations to an existing settings dict (in-place).
+    Returns True if any migration was applied (caller should save).
+    """
+    from updater import APP_VERSION
+
+    stored = settings.get("settings_version", "0.0.0")
+    current = APP_VERSION
+
+    if stored == current:
+        return False
+
+    dirty = False
+
+    # ── 2.7.6 : dual-server split — 9988=HTTP extension, 9989=HTTPS remote ──
+    # Before 2.7.6 the single HTTPS server lived on 9988. After the split,
+    # remote_client_port and remote_port must be 9989.
+    if _version_tuple(stored) < _version_tuple("2.7.6"):
+        if settings.get("remote_client_port") == 9988:
+            settings["remote_client_port"] = 9989
+            print("[settings] migrated remote_client_port 9988 → 9989")
+            dirty = True
+        if settings.get("remote_port") == 9988:
+            settings["remote_port"] = 9989
+            print("[settings] migrated remote_port 9988 → 9989")
+            dirty = True
+
+    settings["settings_version"] = current
+    return dirty or stored != current
+
+
 def load_settings() -> dict:
     """Loads settings from the config file. Returns defaults if not found."""
     defaults = {
@@ -73,6 +113,7 @@ def load_settings() -> dict:
         "extensions":    DEFAULT_EXTENSIONS.copy(),
         "all_files":     False,
         # ── Remote control ─────────────────────
+        "extension_enabled":    True,
         "remote_enabled":       False,
         "remote_port":          9989,
         "remote_username":      "",
@@ -89,12 +130,16 @@ def load_settings() -> dict:
         "remote_client_autoretry":      True,
         # destination history — loaded from dedicated file, not settings.json
         "dest_history":                 [],
+        # migration tracking
+        "settings_version":             "",   # filled at load time by _migrate_settings
     }
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 defaults.update(data)
+                if _migrate_settings(defaults):
+                    save_settings(defaults)
             print(f"[settings] loaded: throttle={defaults.get('throttle')}, retry={defaults.get('retry_max')}")
         except Exception as e:
             print(f"[settings] read error: {e}")
@@ -568,6 +613,15 @@ class SettingsPopup(ctk.CTkToplevel):
         self._section(content, "Remote control",
                       "Server: expose this instance over HTTPS.   "
                       "Client: control a remote TurboDownloader instance.")
+
+        # ── Browser extension toggle ──────────────────────────────────────────
+        ext_row = ctk.CTkFrame(content, fg_color="#1e1e1e", corner_radius=8)
+        ext_row.pack(fill="x", padx=20, pady=(0, 10))
+        self._ext_enabled_var = ctk.BooleanVar(
+            value=self._settings.get("extension_enabled", True))
+        ctk.CTkSwitch(ext_row, text="Browser extension listener",
+                      variable=self._ext_enabled_var).pack(
+                          side="left", padx=14, pady=10)
 
         # ── Two-column card container ─────────────────────────────────────────
         cards = ctk.CTkFrame(content, fg_color="transparent")
@@ -1253,6 +1307,8 @@ class SettingsPopup(ctk.CTkToplevel):
         self._settings["all_files"] = self._all_files_var.get()
 
         # ── Remote control ─────────────────────────────────────────────
+        if getattr(self, "_ext_enabled_var", None):
+            self._settings["extension_enabled"] = self._ext_enabled_var.get()
         self._settings["remote_enabled"] = self._remote_enabled_var.get()
         try:
             from remote_server import LOCAL_EXT_PORT as _EXT_PORT
@@ -1482,6 +1538,9 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
             fg_color="#1f6aa5", state="disabled",
             command=self._confirm_selection)
         self._select_btn.pack(side="left", padx=12, pady=8)
+        ctk.CTkButton(foot, text="📁 New folder", width=120,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._mkdir).pack(side="left", padx=(0, 8), pady=8)
         ctk.CTkButton(foot, text="Cancel", width=100,
                       fg_color="#5a5a5a",
                       command=self.destroy).pack(side="right", padx=12, pady=8)
@@ -1753,6 +1812,33 @@ class _RemoteBrowsePopup(ctk.CTkToplevel):
         self._dest_lbl.configure(text="No folder selected", text_color="#555555")
         self._dest_frame.configure(fg_color="#0d1a0d")
         self._select_btn.configure(state="disabled")
+
+    def _mkdir(self):
+        """Create a new subfolder in the current directory."""
+        if not self._current:
+            return
+        import customtkinter as _ctk
+        dialog = _ctk.CTkInputDialog(text="Folder name:", title="New folder")
+        name = dialog.get_input()
+        if not name:
+            return
+        name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
+        if not name:
+            return
+        if self._mode == "remote":
+            import os as _os
+            sep = "/" if "/" in self._current else "\\"
+            new_path = self._current.rstrip("/\\") + sep + name
+            result = self._client.mkdir(new_path)
+            if result and result.get("ok"):
+                self._navigate(self._current)
+        else:
+            import os as _os
+            try:
+                _os.makedirs(_os.path.join(self._current, name), exist_ok=True)
+                self._navigate_local_tree(self._current, self._fetch_gen + 1)
+            except Exception:
+                pass
 
     def _confirm_selection(self):
         path = self._current
