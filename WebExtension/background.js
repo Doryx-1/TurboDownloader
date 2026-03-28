@@ -13,12 +13,14 @@ const TOKEN_MARGIN_MS = 5 * 60 * 1000;  // renew 5 min before expiry
 // ── Default settings ──────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS = {
-  token:       null,
-  tokenExpiry: 0,
-  intercept:   false,
-  extensions:  [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".mp3", ".flac",
-                ".zip", ".rar", ".7z", ".iso", ".exe", ".msi"],
-  dest:        "",
+  token:              null,
+  tokenExpiry:        0,
+  intercept:          false,
+  extensions:         [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".mp3", ".flac",
+                       ".zip", ".rar", ".7z", ".iso", ".exe", ".msi"],
+  dest:               "",
+  intercept_use_regex: false,
+  intercept_regex:    "",
 };
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -195,7 +197,14 @@ chrome.downloads.onCreated.addListener(async (item) => {
   } catch { return; }
 
   const s = await getSettings();
-  if (!s.intercept || !s.extensions.includes(ext)) return;
+  if (!s.intercept) return;
+  if (s.intercept_use_regex && s.intercept_regex) {
+    try {
+      if (!new RegExp(s.intercept_regex, "i").test(item.url)) return;
+    } catch { return; }
+  } else {
+    if (!s.extensions.includes(ext)) return;
+  }
 
   // Cancel the browser download and erase it from the download shelf
   // before handing the URL to TurboDownloader.

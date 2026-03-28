@@ -97,6 +97,10 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         # Workers check this to decide between "paused" and "waiting" on exit
         self._requeue_set: set = set()
 
+        # Per-host connection semaphores (Feature 10)
+        self._host_semaphores: dict = {}
+        self._host_sem_lock   = threading.Lock()
+
         # Settings (temp dir, etc.)
         self._settings = load_settings()
         ctk.set_appearance_mode(self._settings.get("appearance_mode", "dark"))
@@ -505,7 +509,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.global_dl_label = ctk.CTkLabel(
             sidebar, text="Total: 0 B", anchor="w",
             text_color="#555555", font=ctk.CTkFont(size=11))
-        self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 10))
+        self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 2))
+
+        self.queue_eta_label = ctk.CTkLabel(
+            sidebar, text="", anchor="w",
+            text_color="#555555", font=ctk.CTkFont(size=11))
+        self.queue_eta_label.pack(anchor="w", padx=16, pady=(0, 10))
 
         # ── Remote status bars ────────────────────────────────────────────────
         # Deux barres distinctes : une pour le serveur, une pour le client.
@@ -610,6 +619,16 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             text_color=("gray10", "#dddddd"),
             command=self._apply_sort_order,
         ).pack(side="left", padx=(4, 0), pady=10)
+
+        # Bouton Retry errors — visible uniquement si items en erreur
+        self._retry_errors_btn = ctk.CTkButton(
+            top_bar, text="↺  Retry errors", width=110, height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, border_color="#8B0000",
+            hover_color=("#3a0000", "#3a0000"),
+            text_color=("#8B0000", "#cc4444"),
+            command=self._retry_all_failed)
+        # Not packed yet — shown dynamically in _refresh_filter_counts
 
         # Bouton Clear finished — bas droite du header
         ctk.CTkButton(top_bar, text="🗑 Clear", width=80, height=28,
@@ -807,6 +826,47 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.url_box.delete("1.0", "end")
         self.url_box.insert("1.0", (current + "\n" + injection).strip())
 
+    def _get_host_sem(self, url: str) -> threading.Semaphore:
+        """Returns (or creates) the per-host semaphore for the given URL."""
+        from urllib.parse import urlparse
+        host  = urlparse(url).netloc.lower()
+        limit = max(1, int(self._settings.get("max_per_host", 3)))
+        with self._host_sem_lock:
+            if host not in self._host_semaphores:
+                self._host_semaphores[host] = threading.Semaphore(limit)
+            return self._host_semaphores[host]
+
+    def _reset_host_semaphores(self):
+        """Clears all per-host semaphores (called after settings change)."""
+        with self._host_sem_lock:
+            self._host_semaphores.clear()
+
+    def _fire_webhook(self, payload: dict):
+        """POSTs payload as JSON to the configured webhook URL (non-blocking)."""
+        url = self._settings.get("webhook_url", "").strip()
+        if not url or not self._settings.get("webhook_enabled", False):
+            return
+        try:
+            import urllib.request
+            import json as _json
+            data = _json.dumps(payload).encode()
+            req  = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST")
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            from logger import get_logger
+            get_logger("webhook").warning("Webhook failed: %s", e)
+
+    def _retry_all_failed(self):
+        urls = [it.url for it in self.items.values() if it.state == "error"]
+        if not urls:
+            return
+        self.url_box.delete("1.0", "end")
+        self.url_box.insert("1.0", "\n".join(urls))
+        self.start_downloads()
+
     def _open_settings(self):
         def on_save():
             # Update the existing dict in place (no reference reassignment)
@@ -815,6 +875,8 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             self._apply_remote_settings()
             # Apply clipboard monitor toggle
             self._apply_clipboard_monitor()
+            # Reset per-host semaphores so the new limit takes effect immediately
+            self._reset_host_semaphores()
         SettingsPopup(self, self._settings, on_save)
 
     def _open_history(self):
@@ -1002,6 +1064,15 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             cnt = counts.get(k, 0)
             btn.configure(text=f"{labels[k]}  {cnt}" if cnt else labels[k])
 
+        # Bouton Retry errors — affiché seulement si des items sont en erreur
+        err_count = counts.get("error", 0)
+        if err_count > 0:
+            self._retry_errors_btn.configure(
+                text=f"↺  Retry errors ({err_count})")
+            self._retry_errors_btn.pack(side="right", padx=(0, 6), pady=10)
+        else:
+            self._retry_errors_btn.pack_forget()
+
         # Compteur header
         self._total_count_lbl.configure(
             text=f"{total} item{'s' if total != 1 else ''}" if total else "")
@@ -1019,6 +1090,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
     SCAN_TIMEOUT = 60  # seconds before interrupting the crawl
 
     def start_downloads(self):
+        # Guard against concurrent calls (e.g. rapid extension/protocol triggers at startup).
+        # The button is disabled while a scan+popup is in progress; skip silently if so.
+        # The URL(s) already injected into url_box remain visible for a manual retry.
+        if str(self.start_btn.cget("state")) == "disabled":
+            return
+
         # If window is hidden (tray), bring popups to front without restoring main window
         if not self.winfo_viewable():
             self._show_for_popup()
@@ -1487,6 +1564,30 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                             elif it2.state in ("canceled","skipped"): standalone_canceled += 1
                     if standalone_done + standalone_errs + standalone_canceled > 0:
                         notify_batch_done(standalone_done, standalone_errs, standalone_canceled)
+
+                # ── Batch webhook ──────────────────────────────────────────────
+                if (self._settings.get("webhook_enabled") and
+                        self._settings.get("webhook_on") == "batch"):
+                    done_items = [
+                        it3 for it3 in (self.items.get(i) for i in batch_set) if it3
+                    ]
+                    n_done    = sum(1 for it3 in done_items if it3.state == "done")
+                    n_errors  = sum(1 for it3 in done_items if it3.state == "error")
+                    n_skipped = sum(1 for it3 in done_items
+                                    if it3.state in ("canceled", "skipped"))
+                    files = [
+                        {"name": it3.filename, "url": it3.url,
+                         "size": it3.total_size or 0, "dest": it3.dest_path}
+                        for it3 in done_items if it3.state == "done"
+                    ]
+                    threading.Thread(
+                        target=self._fire_webhook,
+                        args=({"event": "batch_done", "done": n_done,
+                               "errors": n_errors, "canceled": n_skipped,
+                               "files": files},),
+                        daemon=True,
+                    ).start()
+
                 threading.Thread(target=_notify_thread, daemon=True).start()
 
             def _on_future_done(f):

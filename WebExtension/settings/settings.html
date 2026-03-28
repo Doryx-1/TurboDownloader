@@ -88,6 +88,9 @@
       padding-top: 16px; border-top: 1px solid #252525;
       margin-top: 8px;
     }
+    /* ── Regex feedback ── */
+    #regex-feedback.ok  { color: #7aaa7a; display:block; }
+    #regex-feedback.err { color: #aa7a7a; display:block; }
     /* ── Feedback ── */
     .feedback {
       margin-top: 10px; padding: 9px 14px; border-radius: 6px;
@@ -139,10 +142,38 @@
     </div>
   </div>
 
-  <!-- ── File types ── -->
+  <!-- ── Interception mode ── -->
   <div class="section">
+    <div class="section-title">Interception filter mode</div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Use regex instead of extension list</div>
+        <div class="toggle-desc">Match URLs against a custom regular expression</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="intercept-use-regex">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- ── File types ── -->
+  <div class="section" id="ext-section">
     <div class="section-title">Intercepted file types</div>
     <div class="ext-grid" id="ext-grid"></div>
+  </div>
+
+  <!-- ── Regex filter ── -->
+  <div class="section" id="regex-section" style="display:none">
+    <div class="section-title">Regex filter</div>
+    <div class="field">
+      <label>Regular expression (tested against the full URL)</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="intercept-regex" placeholder="e.g. \.(mkv|mp4)(\?.*)?$" style="flex:1">
+        <button class="btn btn-secondary" id="regex-test-btn" style="padding:6px 14px;font-size:12px;white-space:nowrap">Test</button>
+      </div>
+      <div id="regex-feedback" style="font-size:11px;margin-top:5px;display:none"></div>
+    </div>
   </div>
 
   <!-- ── Spacer pushes actions to bottom ── -->

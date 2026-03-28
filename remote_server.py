@@ -315,13 +315,14 @@ class RemoteServer:
     """
 
     def __init__(self, app_ref, settings: dict):
-        self._app_ref        = app_ref     # TurboDownloader instance
-        self._settings       = settings
-        self._local_server   = None        # HTTP, 127.0.0.1 — extension
+        self._app_ref             = app_ref     # TurboDownloader instance
+        self._settings            = settings
+        self._local_server        = None        # HTTP, 127.0.0.1 — extension
         self._local_thread: Optional[threading.Thread] = None
-        self._remote_server  = None        # HTTPS, 0.0.0.0 — TD clients (optional)
+        self._remote_server       = None        # HTTPS, 0.0.0.0 — TD clients (optional)
         self._remote_thread: Optional[threading.Thread] = None
-        self._running        = False
+        self._running             = False
+        self._remote_client_count = 0           # connected WS clients on the HTTPS server
 
     # ---------------------------------------------------------------- Start/Stop
 
@@ -404,7 +405,7 @@ class RemoteServer:
                 if not ssl_ok:
                     _log.warning("HTTPS cert generation failed — remote access disabled")
                 else:
-                    remote_app = self._build_fastapi_app()   # separate instance to avoid shared-state issues
+                    remote_app = self._build_fastapi_app(is_remote=True)   # separate instance to avoid shared-state issues
                     remote_cfg = uvicorn.Config(
                         app=remote_app,
                         host="0.0.0.0",
@@ -472,7 +473,7 @@ class RemoteServer:
 
     # ---------------------------------------------------------------- FastAPI app
 
-    def _build_fastapi_app(self):
+    def _build_fastapi_app(self, is_remote: bool = False):
         from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Body, Request
         from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
         from fastapi.middleware.cors import CORSMiddleware
@@ -908,6 +909,9 @@ class RemoteServer:
                 return
 
             await ws.accept()
+            if is_remote:
+                self._remote_client_count += 1
+                app_ref.after(0, app_ref._update_remote_status_bar)
             try:
                 while True:
                     now     = time.time()
@@ -923,6 +927,10 @@ class RemoteServer:
                 pass
             except Exception as e:
                 print(f"[remote] WebSocket error: {e}")
+            finally:
+                if is_remote:
+                    self._remote_client_count -= 1
+                    app_ref.after(0, app_ref._update_remote_status_bar)
 
         return api
 

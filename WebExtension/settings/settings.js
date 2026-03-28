@@ -16,14 +16,28 @@
   // ── Load settings ─────────────────────────────────────────────────────────
 
   const stored = await chrome.storage.local.get({
-    dest:       "",
-    intercept:  false,
-    extensions: [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".mp3", ".flac",
-                 ".zip", ".rar", ".7z", ".iso", ".exe", ".msi"],
+    dest:               "",
+    intercept:          false,
+    extensions:         [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".mp3", ".flac",
+                         ".zip", ".rar", ".7z", ".iso", ".exe", ".msi"],
+    intercept_use_regex: false,
+    intercept_regex:    "",
   });
 
-  document.getElementById("dest").value        = stored.dest;
-  document.getElementById("intercept").checked = stored.intercept;
+  document.getElementById("dest").value               = stored.dest;
+  document.getElementById("intercept").checked        = stored.intercept;
+  document.getElementById("intercept-use-regex").checked = stored.intercept_use_regex;
+  document.getElementById("intercept-regex").value    = stored.intercept_regex;
+
+  // ── Toggle ext list / regex section ───────────────────────────────────────
+
+  function applyFilterMode() {
+    const useRegex = document.getElementById("intercept-use-regex").checked;
+    document.getElementById("ext-section").style.display   = useRegex ? "none"  : "";
+    document.getElementById("regex-section").style.display = useRegex ? ""      : "none";
+  }
+  applyFilterMode();
+  document.getElementById("intercept-use-regex").addEventListener("change", applyFilterMode);
 
   // ── Extension tags ────────────────────────────────────────────────────────
 
@@ -69,6 +83,26 @@
 
   checkStatus();
 
+  // ── Regex test button ─────────────────────────────────────────────────────
+
+  document.getElementById("regex-test-btn").addEventListener("click", () => {
+    const val = document.getElementById("intercept-regex").value.trim();
+    const fb  = document.getElementById("regex-feedback");
+    if (!val) {
+      fb.textContent = "Enter a regex to test.";
+      fb.className = "err";
+      return;
+    }
+    try {
+      new RegExp(val, "i");
+      fb.textContent = "✓ Valid regex";
+      fb.className   = "ok";
+    } catch (e) {
+      fb.textContent = "✗ " + e.message;
+      fb.className   = "err";
+    }
+  });
+
   // ── Test button ───────────────────────────────────────────────────────────
 
   document.getElementById("test-btn").addEventListener("click", async () => {
@@ -88,11 +122,13 @@
     btn.disabled = true;
 
     await chrome.storage.local.set({
-      dest:        document.getElementById("dest").value.trim(),
-      intercept:   document.getElementById("intercept").checked,
-      extensions:  [...activeExts],
-      token:       null,
-      tokenExpiry: 0,
+      dest:               document.getElementById("dest").value.trim(),
+      intercept:          document.getElementById("intercept").checked,
+      extensions:         [...activeExts],
+      intercept_use_regex: document.getElementById("intercept-use-regex").checked,
+      intercept_regex:    document.getElementById("intercept-regex").value.trim(),
+      token:              null,
+      tokenExpiry:        0,
     });
 
     chrome.runtime.sendMessage({ type: "SETTINGS_SAVED" }).catch(() => {});

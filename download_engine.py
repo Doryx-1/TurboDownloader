@@ -10,10 +10,28 @@ import ytdlp_worker
 
 _log = get_logger("download_engine")
 
-CHUNK_SIZE = 1024 * 512  # 512 KB per chunk
+CHUNK_SIZE = 1024 * 512  # 512 KB fallback (non-adaptive paths)
 
 
 class DownloadEngineMixin:
+
+    def _adaptive_chunk(self, it) -> int:
+        """Returns the optimal read chunk size based on the item's recent speed.
+        Calculated once per segment from the speed_window deque.
+        Tiers: <500 KB/s → 128 KB · <2 MB/s → 256 KB · <10 MB/s → 512 KB · else → 1 MB.
+        Falls back to 256 KB when there is not enough history yet.
+        """
+        win = list(it.speed_window)
+        if len(win) < 2:
+            return 256 * 1024
+        elapsed = win[-1][0] - win[0][0]
+        if elapsed < 0.1:
+            return 256 * 1024
+        bps = sum(s[1] for s in win) / elapsed
+        if bps < 500 * 1024:    return 128 * 1024
+        if bps < 2 * 1024**2:   return 256 * 1024
+        if bps < 10 * 1024**2:  return 512 * 1024
+        return 1024 * 1024
 
     def _throttle_chunk(self, n: int):
         """Throttles the worker if the global bandwidth limit is reached.
@@ -64,7 +82,13 @@ class DownloadEngineMixin:
     def _is_retryable(self, e: Exception) -> bool:
         name = type(e).__name__.lower()
         msg  = str(e).lower()
-        return any(k in name or k in msg for k in self._RETRYABLE)
+        if any(k in name or k in msg for k in self._RETRYABLE):
+            return True
+        # HTTP 5xx — transient server error (502, 503, 504, …)
+        resp = getattr(e, "response", None)
+        if resp is not None and getattr(resp, "status_code", 0) >= 500:
+            return True
+        return False
 
     def _download_multipart(self, idx: int, n_seg: int) -> str:
         """
@@ -210,8 +234,9 @@ class DownloadEngineMixin:
                     return
 
                 last_ui = 0.0
+                chunk_sz = self._adaptive_chunk(it)
                 with open(seg.temp_path, write_mode) as f:
-                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                    for chunk in r.iter_content(chunk_size=chunk_sz):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
                             return   # canceled — keep .part.N for resume
 
@@ -441,6 +466,15 @@ class DownloadEngineMixin:
         )
         self.ui(self._update_row_ui, idx)
         self.ui(self._refresh_filter_counts)
+        # Per-file webhook
+        if self._settings.get("webhook_enabled") and self._settings.get("webhook_on") == "file":
+            import threading as _th
+            _th.Thread(
+                target=self._fire_webhook,
+                args=({"event": "file_done", "filename": it.filename,
+                       "url": it.url, "size": size, "dest": it.dest_path},),
+                daemon=True,
+            ).start()
 
     def _check_disk_space(self, it):
         """Raises _FatalError if there is not enough free space in the temp folder."""
@@ -501,6 +535,9 @@ class DownloadEngineMixin:
 
             existing_size, headers = self._resolve_resume(it)
 
+            # Acquire per-host slot — released in the finally block below
+            _host_sem = self._get_host_sem(it.url)
+            _host_sem.acquire()
             try:
                 with self.req.get(it.url, stream=True, allow_redirects=True,
                                   timeout=60, headers=headers) as r:
@@ -641,6 +678,8 @@ class DownloadEngineMixin:
                 self.ui(self._update_row_ui, idx)
                 self.ui(self._refresh_filter_counts)
                 return
+            finally:
+                _host_sem.release()
 
     # ----------------------------------------------------------------- yt-dlp worker
 
