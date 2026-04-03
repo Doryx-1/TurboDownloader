@@ -61,6 +61,7 @@ class DownloadItem:
     yt_format_id:  Optional[str] = None   # format_id chosen in quality popup
     yt_audio_only: bool          = False  # audio-only extraction mode
     yt_retry:      bool          = False  # True on auto-retry with alternate client
+    yt_retry_count: int          = 0      # number of auto-retry attempts made
 
     # Remote duplicate-file resolution
     conflict_event:  Optional[threading.Event] = None   # set by client's resolve
@@ -71,3 +72,77 @@ class DownloadItem:
     playlist_group_title: Optional[str] = None
     playlist_index:       int           = 0
     playlist_total:       int           = 0
+
+    last_activity: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        """Serialize to JSON-safe dict (excludes threading primitives)."""
+        return {
+            "url":           self.url,
+            "filename":      self.filename,
+            "dest_path":     self.dest_path,
+            "relative_path": self.relative_path,
+            "total_size":    self.total_size,
+            "resume_from":   self.resume_from,
+            "downloaded":    self.downloaded,
+            "state":         self.state,
+            "temp_path":     self.temp_path,
+            "worker_type":         self.worker_type,
+            "yt_format_id":        self.yt_format_id,
+            "yt_audio_only":       self.yt_audio_only,
+            "from_remote":         self.from_remote,
+            "retry_count":         self.retry_count,
+            "error_msg":           self.error_msg,
+            "playlist_group_id":   self.playlist_group_id,
+            "playlist_group_title":self.playlist_group_title,
+            "playlist_index":      self.playlist_index,
+            "playlist_total":      self.playlist_total,
+            "segments": [
+                {
+                    "index":      s.index,
+                    "byte_start": s.byte_start,
+                    "byte_end":   s.byte_end,
+                    "temp_path":  s.temp_path,
+                    "downloaded": s.downloaded,
+                    "done":       s.done,
+                }
+                for s in self.segments
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DownloadItem":
+        """Reconstruct from a serialized dict. State always reset to 'waiting'."""
+        item = cls(
+            url=d["url"],
+            filename=d["filename"],
+            dest_path=d["dest_path"],
+        )
+        item.relative_path = d.get("relative_path", "")
+        item.total_size    = d.get("total_size")
+        item.resume_from   = d.get("resume_from", 0)
+        item.downloaded    = d.get("downloaded", 0)
+        item.state         = "waiting"   # always re-queue as waiting
+        item.temp_path     = d.get("temp_path", "")
+        item.worker_type   = d.get("worker_type", "http")
+        item.yt_format_id        = d.get("yt_format_id")
+        item.yt_audio_only       = d.get("yt_audio_only", False)
+        item.from_remote         = False   # never restore remote items
+        item.retry_count         = d.get("retry_count", 0)
+        item.error_msg           = d.get("error_msg", "")
+        item.playlist_group_id   = d.get("playlist_group_id")
+        item.playlist_group_title= d.get("playlist_group_title")
+        item.playlist_index      = d.get("playlist_index", 0)
+        item.playlist_total      = d.get("playlist_total", 0)
+        item.segments = [
+            SegmentInfo(
+                index=s["index"],
+                byte_start=s["byte_start"],
+                byte_end=s["byte_end"],
+                temp_path=s.get("temp_path", ""),
+                downloaded=s.get("downloaded", 0),
+                done=s.get("done", False),
+            )
+            for s in d.get("segments", [])
+        ]
+        return item

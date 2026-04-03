@@ -1,13 +1,18 @@
 import os
 import sys
 import time
+import json
 import queue
+import pathlib
 import threading
 from collections import deque
 from typing import Optional
 from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from logger import get_logger
+
+_CONFIG_DIR = pathlib.Path.home() / ".turbodownloader"
+_QUEUE_FILE = _CONFIG_DIR / "queue.json"
 
 _log = get_logger("downloader")
 import requests
@@ -92,6 +97,10 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         # Workers check this to decide between "paused" and "waiting" on exit
         self._requeue_set: set = set()
 
+        # Per-host connection semaphores (Feature 10)
+        self._host_semaphores: dict = {}
+        self._host_sem_lock   = threading.Lock()
+
         # Settings (temp dir, etc.)
         self._settings = load_settings()
         ctk.set_appearance_mode(self._settings.get("appearance_mode", "dark"))
@@ -110,6 +119,8 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self._start_remote_if_enabled()
 
         self._build_ui()
+        self.bind("<F1>", lambda e: self._retry_all_failed())
+        self.after(100, self._restore_queue)
 
         # ── Tray icon ─────────────────────────────────────────────────────────
         self._tray = tray_module.TrayIcon(self)
@@ -173,17 +184,92 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.focus_force()
 
     def _tray_quit(self):
-        """Quit completely — stop server, cleanup, destroy."""
+        """Quit completely — save queue, stop server, cleanup, destroy."""
+        self._save_queue()   # save before stopping workers
         try:
             if self._remote_server:
                 self._remote_server.stop()
             if self._remote_client:
                 self._remote_client.disconnect()
             self.stop_all_event.set()
+            for it in self.items.values():
+                it.cancel_event.set()   # stop workers cleanly without deleting .part files
+            if self.executor:
+                try:
+                    self.executor.shutdown(wait=False, cancel_futures=False)
+                except TypeError:
+                    self.executor.shutdown(wait=False)
             self._tray.stop()
         except Exception:
             pass
         self.destroy()
+
+    def _save_queue(self):
+        """Persists waiting/downloading items to disk before quit."""
+        saveable = [
+            it.to_dict()
+            for it in self.items.values()
+            if it.state in ("waiting", "paused", "downloading")
+            and not it.from_remote
+        ]
+        try:
+            _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            if saveable:
+                with open(_QUEUE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(saveable, f, indent=2, ensure_ascii=False)
+            elif _QUEUE_FILE.exists():
+                _QUEUE_FILE.unlink()
+        except Exception as e:
+            print(f"[queue] save error: {e}")
+
+    def _restore_queue(self):
+        """Reloads the saved queue after startup."""
+        if not _QUEUE_FILE.exists():
+            return
+        try:
+            data = json.loads(_QUEUE_FILE.read_text(encoding="utf-8"))
+            count = 0
+            for d in data:
+                it = DownloadItem.from_dict(d)
+                if not os.path.isdir(os.path.dirname(it.dest_path)):
+                    continue
+                idx = self._next_idx
+                self._next_idx += 1
+                with self._items_lock:
+                    self.items[idx] = it
+                self._add_row_for_item(idx, it)
+                count += 1
+            if count:
+                self.after(300, lambda n=count: self._show_restore_banner(n))
+        except Exception as e:
+            print(f"[queue] restore error: {e}")
+        finally:
+            try:
+                _QUEUE_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _show_restore_banner(self, count: int):
+        """Shows a brief info banner when downloads are restored from queue."""
+        import customtkinter as _ctk
+        banner = _ctk.CTkFrame(
+            self, fg_color=("#d8e8f8", "#1a2a3a"),
+            corner_radius=0, border_width=1,
+            border_color=("#4a8aaa", "#1f4a6a"))
+        banner.place(relx=0, rely=0, relwidth=1, anchor="nw")
+        _ctk.CTkLabel(
+            banner,
+            text=f"↺  {count} download(s) restored from previous session — click Start to resume",
+            font=_ctk.CTkFont(size=11),
+            text_color=("#1a4a6a", "#7ab4d4"),
+        ).pack(side="left", padx=12, pady=6)
+        _ctk.CTkButton(
+            banner, text="✕", width=24, height=24,
+            fg_color="transparent", border_width=0,
+            text_color=("#1a4a6a", "#7ab4d4"),
+            command=banner.destroy,
+        ).pack(side="right", padx=8)
+        self.after(8000, lambda: banner.destroy() if banner.winfo_exists() else None)
 
     def _show_for_popup(self):
         """
@@ -424,7 +510,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.global_dl_label = ctk.CTkLabel(
             sidebar, text="Total: 0 B", anchor="w",
             text_color="#555555", font=ctk.CTkFont(size=11))
-        self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 10))
+        self.global_dl_label.pack(anchor="w", padx=16, pady=(0, 2))
+
+        self.queue_eta_label = ctk.CTkLabel(
+            sidebar, text="", anchor="w",
+            text_color="#555555", font=ctk.CTkFont(size=11))
+        self.queue_eta_label.pack(anchor="w", padx=16, pady=(0, 10))
 
         # ── Remote status bars ────────────────────────────────────────────────
         # Deux barres distinctes : une pour le serveur, une pour le client.
@@ -515,6 +606,30 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             top_bar, text="", text_color="#555555",
             font=ctk.CTkFont(size=11))
         self._total_count_lbl.pack(side="left", padx=(0, 16), pady=12)
+
+        # ── Sort dropdown ──────────────────────────────────────────────────────
+        self._sort_var = ctk.StringVar(value="Recent")
+        ctk.CTkOptionMenu(
+            top_bar,
+            variable=self._sort_var,
+            values=["Recent", "Name A→Z", "Name Z→A", "Status", "Size ↓"],
+            width=130, height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color=("gray85", "#2a2a2a"),
+            button_color=("gray75", "#333333"),
+            text_color=("gray10", "#dddddd"),
+            command=self._apply_sort_order,
+        ).pack(side="left", padx=(4, 0), pady=10)
+
+        # Bouton Retry errors — visible uniquement si items en erreur
+        self._retry_errors_btn = ctk.CTkButton(
+            top_bar, text="↺  Retry errors", width=110, height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, border_color="#8B0000",
+            hover_color=("#3a0000", "#3a0000"),
+            text_color=("#8B0000", "#cc4444"),
+            command=self._retry_all_failed)
+        # Not packed yet — shown dynamically in _refresh_filter_counts
 
         # Bouton Clear finished — bas droite du header
         ctk.CTkButton(top_bar, text="🗑 Clear", width=80, height=28,
@@ -712,6 +827,47 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self.url_box.delete("1.0", "end")
         self.url_box.insert("1.0", (current + "\n" + injection).strip())
 
+    def _get_host_sem(self, url: str) -> threading.Semaphore:
+        """Returns (or creates) the per-host semaphore for the given URL."""
+        from urllib.parse import urlparse
+        host  = urlparse(url).netloc.lower()
+        limit = max(1, int(self._settings.get("max_per_host", 3)))
+        with self._host_sem_lock:
+            if host not in self._host_semaphores:
+                self._host_semaphores[host] = threading.Semaphore(limit)
+            return self._host_semaphores[host]
+
+    def _reset_host_semaphores(self):
+        """Clears all per-host semaphores (called after settings change)."""
+        with self._host_sem_lock:
+            self._host_semaphores.clear()
+
+    def _fire_webhook(self, payload: dict):
+        """POSTs payload as JSON to the configured webhook URL (non-blocking)."""
+        url = self._settings.get("webhook_url", "").strip()
+        if not url or not self._settings.get("webhook_enabled", False):
+            return
+        try:
+            import urllib.request
+            import json as _json
+            data = _json.dumps(payload).encode()
+            req  = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST")
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            from logger import get_logger
+            get_logger("webhook").warning("Webhook failed: %s", e)
+
+    def _retry_all_failed(self):
+        urls = [it.url for it in self.items.values() if it.state == "error"]
+        if not urls:
+            return
+        self.url_box.delete("1.0", "end")
+        self.url_box.insert("1.0", "\n".join(urls))
+        self.start_downloads()
+
     def _open_settings(self):
         def on_save():
             # Update the existing dict in place (no reference reassignment)
@@ -720,6 +876,8 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             self._apply_remote_settings()
             # Apply clipboard monitor toggle
             self._apply_clipboard_monitor()
+            # Reset per-host semaphores so the new limit takes effect immediately
+            self._reset_host_semaphores()
         SettingsPopup(self, self._settings, on_save)
 
     def _open_history(self):
@@ -907,6 +1065,15 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
             cnt = counts.get(k, 0)
             btn.configure(text=f"{labels[k]}  {cnt}" if cnt else labels[k])
 
+        # Bouton Retry errors — affiché seulement si des items sont en erreur
+        err_count = counts.get("error", 0)
+        if err_count > 0:
+            self._retry_errors_btn.configure(
+                text=f"↺  Retry errors ({err_count})")
+            self._retry_errors_btn.pack(side="right", padx=(0, 6), pady=10)
+        else:
+            self._retry_errors_btn.pack_forget()
+
         # Compteur header
         self._total_count_lbl.configure(
             text=f"{total} item{'s' if total != 1 else ''}" if total else "")
@@ -924,6 +1091,12 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
     SCAN_TIMEOUT = 60  # seconds before interrupting the crawl
 
     def start_downloads(self):
+        # Guard against concurrent calls (e.g. rapid extension/protocol triggers at startup).
+        # The button is disabled while a scan+popup is in progress; skip silently if so.
+        # The URL(s) already injected into url_box remain visible for a manual retry.
+        if str(self.start_btn.cget("state")) == "disabled":
+            return
+
         # If window is hidden (tray), bring popups to front without restoring main window
         if not self.winfo_viewable():
             self._show_for_popup()
@@ -1241,8 +1414,8 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 it.speed_window.clear()
                 it.worker_type          = wtype
                 it.yt_format_id         = format_id
-                it.yt_audio_only        = audio_only  # type: ignore[attr-defined]
-                it.from_remote          = from_remote # type: ignore[attr-defined]
+                it.yt_audio_only        = audio_only
+                it.from_remote          = from_remote
                 it.playlist_group_id    = group_id
                 it.playlist_group_title = group_title
                 it.playlist_index       = group_index
@@ -1257,7 +1430,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 it.worker_type          = wtype
                 it.yt_format_id         = format_id
                 it.yt_audio_only        = audio_only
-                it.from_remote          = from_remote  # type: ignore[attr-defined]
+                it.from_remote          = from_remote
                 it.playlist_group_id    = group_id
                 it.playlist_group_title = group_title
                 it.playlist_index       = group_index
@@ -1343,7 +1516,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
 
                 # Determine how many retries have been done (max retry_count across batch)
                 attempt = max(
-                    (getattr(self.items[i], "yt_retry_count", 0)
+                    (self.items[i].yt_retry_count
                      for i in batch_set if i in self.items),
                     default=0
                 )
@@ -1352,8 +1525,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                     # Increment retry counter on all errored items
                     for i in batch_set:
                         if i in self.items and self.items[i].state == "error":
-                            cur = getattr(self.items[i], "yt_retry_count", 0)
-                            self.items[i].yt_retry_count = cur + 1  # type: ignore
+                            self.items[i].yt_retry_count += 1
                     time.sleep(2)   # brief pause before retry
                     _retry_errors(attempt + 1)
                     return  # notification deferred to next completion
@@ -1392,6 +1564,30 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                             elif it2.state in ("canceled","skipped"): standalone_canceled += 1
                     if standalone_done + standalone_errs + standalone_canceled > 0:
                         notify_batch_done(standalone_done, standalone_errs, standalone_canceled)
+
+                # ── Batch webhook ──────────────────────────────────────────────
+                if (self._settings.get("webhook_enabled") and
+                        self._settings.get("webhook_on") == "batch"):
+                    done_items = [
+                        it3 for it3 in (self.items.get(i) for i in batch_set) if it3
+                    ]
+                    n_done    = sum(1 for it3 in done_items if it3.state == "done")
+                    n_errors  = sum(1 for it3 in done_items if it3.state == "error")
+                    n_skipped = sum(1 for it3 in done_items
+                                    if it3.state in ("canceled", "skipped"))
+                    files = [
+                        {"name": it3.filename, "url": it3.url,
+                         "size": it3.total_size or 0, "dest": it3.dest_path}
+                        for it3 in done_items if it3.state == "done"
+                    ]
+                    threading.Thread(
+                        target=self._fire_webhook,
+                        args=({"event": "batch_done", "done": n_done,
+                               "errors": n_errors, "canceled": n_skipped,
+                               "files": files},),
+                        daemon=True,
+                    ).start()
+
                 threading.Thread(target=_notify_thread, daemon=True).start()
 
             def _on_future_done(f):

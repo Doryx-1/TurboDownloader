@@ -1,5 +1,86 @@
 // popup.js — TurboDownloader Extension Popup
 
+// ── Download progress WebSocket ─────────────────────────────────────────────
+let _dlWs = null;
+let _dlRenderScheduled = false;
+
+function _throttledRender(items) {
+  if (_dlRenderScheduled) return;
+  _dlRenderScheduled = true;
+  setTimeout(() => {
+    _dlRenderScheduled = false;
+    _renderDownloads(items);
+  }, 500);
+}
+
+function _connectDlWs(token) {
+  if (_dlWs) { try { _dlWs.close(); } catch(e){} }
+  try {
+    _dlWs = new WebSocket(`ws://127.0.0.1:9988/ws?token=${encodeURIComponent(token)}`);
+    _dlWs.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        _throttledRender(data.downloads || []);
+      } catch(err) {}
+    };
+    _dlWs.onclose = () => {
+      _dlWs = null;
+      const sec = document.getElementById('dl-section');
+      if (sec) sec.style.display = 'none';
+    };
+    _dlWs.onerror = () => {
+      if (_dlWs) _dlWs.close();
+    };
+  } catch(e) {}
+}
+
+function _renderDownloads(items) {
+  const active = (items || []).filter(i =>
+    ['downloading', 'waiting', 'paused', 'moving'].includes(i.state));
+  const section = document.getElementById('dl-section');
+  const list = document.getElementById('dl-list');
+  if (!section || !list) return;
+
+  if (!active.length) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'block';
+
+  list.innerHTML = active.map(i => {
+    const name = (i.filename || 'Unknown').slice(0, 35);
+    const pct = (i.total && i.total > 0)
+      ? Math.round(((i.downloaded || 0) / i.total) * 100)
+      : (i.progress || 0);
+    const speed = i.speed_bps > 0
+      ? _fmtSpeed(i.speed_bps)
+      : '';
+    const stateColor = {
+      'downloading': '#2e8b57',
+      'waiting':     '#666',
+      'paused':      '#5a7a9a',
+      'moving':      '#888800',
+    }[i.state] || '#666';
+
+    return `<div class="dl-row">
+      <span class="dl-name" title="${i.filename || ''}">${name}</span>
+      <div class="dl-bar-bg">
+        <div class="dl-bar-fill" style="width:${pct}%;background:${stateColor}"></div>
+      </div>
+      <span class="dl-meta">${pct}%${speed ? ' · ' + speed : ''} ·
+        <span style="color:${stateColor}">${i.state}</span></span>
+    </div>`;
+  }).join('');
+}
+
+function _fmtSpeed(bps) {
+  if (bps >= 1048576) return (bps/1048576).toFixed(1) + ' MB/s';
+  if (bps >= 1024)    return (bps/1024).toFixed(0) + ' KB/s';
+  return bps + ' B/s';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 (async () => {
   "use strict";
 
@@ -59,6 +140,11 @@
         "Connected — TurboDownloader",
         active > 0 ? `${active} active` : ""
       );
+      // Connect WebSocket for live download progress
+      const stored = await chrome.storage.local.get({ token: null });
+      if (stored.token) {
+        _connectDlWs(stored.token);
+      }
     } else {
       setStatus("disconnected",
         "Cannot reach TurboDownloader",

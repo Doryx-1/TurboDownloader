@@ -137,6 +137,12 @@ def load_settings() -> dict:
         "remote_client_autoretry":      True,
         # destination history — loaded from dedicated file, not settings.json
         "dest_history":                 [],
+        # download behaviour
+        "max_per_host":                 3,        # max simultaneous connections to the same host
+        # webhook
+        "webhook_enabled":              False,
+        "webhook_url":                  "",
+        "webhook_on":                   "batch",  # "batch" | "file"
         # appearance
         "appearance_mode":              "dark",   # dark / light / system
         # migration tracking
@@ -460,6 +466,49 @@ class SettingsPopup(ctk.CTkToplevel):
         ctk.CTkLabel(row_fe,
                      text="ask = popup each time  |  rename = add _2, _3…",
                      text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left")
+
+        ctk.CTkFrame(p, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(0, 4))
+
+        self._section(p, "Per-host connection limit",
+                      "Max simultaneous connections to the same server. Default: 3.")
+        row_mph = ctk.CTkFrame(p, fg_color="transparent")
+        row_mph.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(row_mph, text="Max connections:", width=140, anchor="w").pack(side="left")
+        self._max_per_host_entry = ctk.CTkEntry(row_mph, width=60)
+        self._max_per_host_entry.insert(0, str(self._settings.get("max_per_host", 3)))
+        self._max_per_host_entry.pack(side="left")
+        ctk.CTkLabel(row_mph, text="(1 – 10)",
+                     text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left", padx=(8, 0))
+
+        ctk.CTkFrame(p, height=1, fg_color=("gray70", "#3a3a3a")).pack(fill="x", padx=20, pady=(0, 4))
+
+        self._section(p, "Webhook",
+                      "POST a JSON payload to a URL when downloads complete.")
+        row_wh_enable = ctk.CTkFrame(p, fg_color="transparent")
+        row_wh_enable.pack(fill="x", padx=20, pady=(0, 6))
+        self._webhook_var = ctk.BooleanVar(value=self._settings.get("webhook_enabled", False))
+        ctk.CTkCheckBox(row_wh_enable, text="Enable webhook",
+                        variable=self._webhook_var).pack(side="left")
+
+        row_wh_url = ctk.CTkFrame(p, fg_color="transparent")
+        row_wh_url.pack(fill="x", padx=20, pady=(0, 6))
+        ctk.CTkLabel(row_wh_url, text="URL:", width=50, anchor="w").pack(side="left")
+        self._webhook_url_entry = ctk.CTkEntry(
+            row_wh_url, width=340,
+            placeholder_text="https://example.com/webhook  (or webhook.site/…)")
+        self._webhook_url_entry.insert(0, self._settings.get("webhook_url", ""))
+        self._webhook_url_entry.pack(side="left", padx=(0, 8))
+
+        row_wh_on = ctk.CTkFrame(p, fg_color="transparent")
+        row_wh_on.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(row_wh_on, text="Trigger:", width=50, anchor="w").pack(side="left")
+        self._webhook_on_var = ctk.StringVar(value=self._settings.get("webhook_on", "batch"))
+        ctk.CTkOptionMenu(
+            row_wh_on, variable=self._webhook_on_var, width=160,
+            values=["batch", "file"],
+        ).pack(side="left")
+        ctk.CTkLabel(row_wh_on, text="batch = once per Start · file = on each completed file",
+                     text_color="gray", font=ctk.CTkFont(size=10)).pack(side="left", padx=(8, 0))
 
 
     # ── Tab: Extensions ───────────────────────────────────────────────────
@@ -1291,6 +1340,24 @@ class SettingsPopup(ctk.CTkToplevel):
             self._settings["workers"] = max(1, min(20, workers))
         except ValueError:
             self._settings["workers"] = 10
+
+        # Max per host
+        try:
+            mph = int(self._max_per_host_entry.get().strip() or "3")
+            self._settings["max_per_host"] = max(1, min(10, mph))
+        except ValueError:
+            self._settings["max_per_host"] = 3
+
+        # Webhook
+        if getattr(self, "_webhook_var", None):
+            self._settings["webhook_enabled"] = self._webhook_var.get()
+        if getattr(self, "_webhook_url_entry", None):
+            wurl = self._webhook_url_entry.get().strip()
+            if wurl and not wurl.startswith(("http://", "https://")):
+                wurl = ""  # silently discard invalid URL
+            self._settings["webhook_url"] = wurl
+        if getattr(self, "_webhook_on_var", None):
+            self._settings["webhook_on"] = self._webhook_on_var.get()
 
         # Notifications
         self._settings["notifications"] = self._notif_var.get()

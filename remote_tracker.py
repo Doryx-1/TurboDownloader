@@ -1,4 +1,5 @@
 """remote_tracker.py — RemoteTrackerMixin for TurboDownloader."""
+import time
 import threading
 from logger import get_logger
 import remote_server
@@ -118,9 +119,14 @@ class RemoteTrackerMixin:
 
         # ── Server bar ───────────────────────────────────────────────────────
         if srv_running:
-            port = self._settings.get("remote_port", 9989)
-            self._remote_srv_lbl.configure(
-                text=f"📡  Server — listening on :{port}")
+            port         = self._settings.get("remote_port", 9989)
+            client_count = getattr(self._remote_server, "_remote_client_count", 0)
+            if client_count > 0:
+                n   = client_count
+                lbl = f"🟢  Server — {n} client{'s' if n > 1 else ''} connected"
+            else:
+                lbl = f"📡  Server — listening on :{port}"
+            self._remote_srv_lbl.configure(text=lbl)
             self._remote_srv_bar.pack(fill="x", padx=16, pady=(0, 4))
         else:
             self._remote_srv_bar.pack_forget()
@@ -211,6 +217,22 @@ class RemoteTrackerMixin:
                                     self.ui(_mark_done)
                         else:
                             missing_polls.pop(srv_idx, None)
+
+                    # ── Ghost row watchdog (server_idx never confirmed) ────────
+                    GHOST_TIMEOUT = 30  # seconds
+                    _gnow = time.time()
+                    for _s_idx, _shadow in list(self._shadow_rows.items()):
+                        if (_shadow.get("server_idx") is None and
+                                _gnow - _shadow.get("created_at", _gnow) > GHOST_TIMEOUT):
+                            def _mark_ghost(s=_shadow):
+                                s["state"] = "error"
+                                r = s["row"]
+                                r.status.configure(
+                                    text="📡 Unreachable", text_color="#8B0000")
+                                r.cancel_btn.configure(state="disabled")
+                                r.remove_btn.configure(state="normal")
+                            self.ui(_mark_ghost)
+                            # Ne pas supprimer — laisser l'user faire remove_btn
 
                     # Collect all row updates, apply in a single UI call
                     pending_updates = []
