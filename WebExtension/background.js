@@ -235,10 +235,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg.type) {
 
-      case "SEND_URLS":
-        await sendInteractive(msg.urls || []);
-        sendResponse({ ok: true });
+      case "SEND_URLS": {
+        const _urls = msg.urls || [];
+        await sendInteractive(_urls);
+        sendResponse({ ok: _urls.length, total: _urls.length });
         break;
+      }
 
       case "LINKS_FOUND": {
         const tabId = sender.tab?.id;

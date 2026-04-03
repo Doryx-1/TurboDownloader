@@ -119,6 +119,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
         self._start_remote_if_enabled()
 
         self._build_ui()
+        self.bind("<F1>", lambda e: self._retry_all_failed())
         self.after(100, self._restore_queue)
 
         # ── Tray icon ─────────────────────────────────────────────────────────
@@ -1413,8 +1414,8 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 it.speed_window.clear()
                 it.worker_type          = wtype
                 it.yt_format_id         = format_id
-                it.yt_audio_only        = audio_only  # type: ignore[attr-defined]
-                it.from_remote          = from_remote # type: ignore[attr-defined]
+                it.yt_audio_only        = audio_only
+                it.from_remote          = from_remote
                 it.playlist_group_id    = group_id
                 it.playlist_group_title = group_title
                 it.playlist_index       = group_index
@@ -1429,7 +1430,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                 it.worker_type          = wtype
                 it.yt_format_id         = format_id
                 it.yt_audio_only        = audio_only
-                it.from_remote          = from_remote  # type: ignore[attr-defined]
+                it.from_remote          = from_remote
                 it.playlist_group_id    = group_id
                 it.playlist_group_title = group_title
                 it.playlist_index       = group_index
@@ -1515,7 +1516,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
 
                 # Determine how many retries have been done (max retry_count across batch)
                 attempt = max(
-                    (getattr(self.items[i], "yt_retry_count", 0)
+                    (self.items[i].yt_retry_count
                      for i in batch_set if i in self.items),
                     default=0
                 )
@@ -1524,8 +1525,7 @@ class TurboDownloader(DownloadEngineMixin, RemoteTrackerMixin, RowManagerMixin, 
                     # Increment retry counter on all errored items
                     for i in batch_set:
                         if i in self.items and self.items[i].state == "error":
-                            cur = getattr(self.items[i], "yt_retry_count", 0)
-                            self.items[i].yt_retry_count = cur + 1  # type: ignore
+                            self.items[i].yt_retry_count += 1
                     time.sleep(2)   # brief pause before retry
                     _retry_errors(attempt + 1)
                     return  # notification deferred to next completion

@@ -61,6 +61,7 @@ class DownloadItem:
     yt_format_id:  Optional[str] = None   # format_id chosen in quality popup
     yt_audio_only: bool          = False  # audio-only extraction mode
     yt_retry:      bool          = False  # True on auto-retry with alternate client
+    yt_retry_count: int          = 0      # number of auto-retry attempts made
 
     # Remote duplicate-file resolution
     conflict_event:  Optional[threading.Event] = None   # set by client's resolve
@@ -86,10 +87,16 @@ class DownloadItem:
             "downloaded":    self.downloaded,
             "state":         self.state,
             "temp_path":     self.temp_path,
-            "worker_type":   self.worker_type,
-            "yt_format_id":  self.yt_format_id,
-            "yt_audio_only": self.yt_audio_only,
-            "from_remote":   self.from_remote,
+            "worker_type":         self.worker_type,
+            "yt_format_id":        self.yt_format_id,
+            "yt_audio_only":       self.yt_audio_only,
+            "from_remote":         self.from_remote,
+            "retry_count":         self.retry_count,
+            "error_msg":           self.error_msg,
+            "playlist_group_id":   self.playlist_group_id,
+            "playlist_group_title":self.playlist_group_title,
+            "playlist_index":      self.playlist_index,
+            "playlist_total":      self.playlist_total,
             "segments": [
                 {
                     "index":      s.index,
@@ -118,9 +125,15 @@ class DownloadItem:
         item.state         = "waiting"   # always re-queue as waiting
         item.temp_path     = d.get("temp_path", "")
         item.worker_type   = d.get("worker_type", "http")
-        item.yt_format_id  = d.get("yt_format_id")
-        item.yt_audio_only = d.get("yt_audio_only", False)
-        item.from_remote   = False   # never restore remote items
+        item.yt_format_id        = d.get("yt_format_id")
+        item.yt_audio_only       = d.get("yt_audio_only", False)
+        item.from_remote         = False   # never restore remote items
+        item.retry_count         = d.get("retry_count", 0)
+        item.error_msg           = d.get("error_msg", "")
+        item.playlist_group_id   = d.get("playlist_group_id")
+        item.playlist_group_title= d.get("playlist_group_title")
+        item.playlist_index      = d.get("playlist_index", 0)
+        item.playlist_total      = d.get("playlist_total", 0)
         item.segments = [
             SegmentInfo(
                 index=s["index"],
