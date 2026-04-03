@@ -49,9 +49,9 @@ function _renderDownloads(items) {
 
   list.innerHTML = active.map(i => {
     const name = (i.filename || 'Unknown').slice(0, 35);
-    const pct = (i.total_size && i.total_size > 0)
-      ? Math.round(((i.downloaded || 0) / i.total_size) * 100)
-      : 0;
+    const pct = (i.total && i.total > 0)
+      ? Math.round(((i.downloaded || 0) / i.total) * 100)
+      : (i.progress || 0);
     const speed = i.speed_bps > 0
       ? _fmtSpeed(i.speed_bps)
       : '';
