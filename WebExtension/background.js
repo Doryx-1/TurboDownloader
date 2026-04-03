@@ -7,8 +7,9 @@
 
 // HTTP is used for local connections — safe on loopback, no cert trust required.
 // The local token exchange (no credentials in transit) provides authentication.
-const TD_HOST        = "http://127.0.0.1:9988";
+const TD_HOST         = "http://127.0.0.1:9988";
 const TOKEN_MARGIN_MS = 5 * 60 * 1000;  // renew 5 min before expiry
+const EXT_VERSION     = chrome.runtime.getManifest().version;
 
 // ── Default settings ──────────────────────────────────────────────────────────
 
@@ -21,6 +22,10 @@ const DEFAULT_SETTINGS = {
   dest:               "",
   intercept_use_regex: false,
   intercept_regex:    "",
+  serverVersion:      null,
+  versionMismatch:    false,
+  versionCheckedAt:   0,
+  versionDismissed:   false,
 };
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -32,6 +37,33 @@ async function getSettings() {
 
 async function saveSettings(patch) {
   await chrome.storage.local.set(patch);
+}
+
+// ── Version check (extension vs server) ──────────────────────────────────────
+
+async function checkServerVersion() {
+  try {
+    const r = await fetch(`${TD_HOST}/version`);
+    if (!r.ok) return;
+    const { version: serverVer } = await r.json();
+    const mismatch = serverVer !== EXT_VERSION;
+    const patch = {
+      serverVersion:    serverVer,
+      versionMismatch:  mismatch,
+      versionCheckedAt: Date.now(),
+    };
+    if (!mismatch) patch.versionDismissed = false;  // reset dismiss quand versions reconciliées
+    await saveSettings(patch);
+  } catch { /* serveur injoignable — on garde l'état précédent */ }
+}
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+
+function authHeaders(token) {
+  return {
+    "Authorization":       `Bearer ${token}`,
+    "X-Extension-Version": EXT_VERSION,
+  };
 }
 
 // ── Auth — local token (no credentials needed) ────────────────────────────────
@@ -63,6 +95,7 @@ async function getToken() {
     const { token, expiresIn } = await fetchLocalToken();
     const expiry = now + expiresIn * 3_600_000;
     await saveSettings({ token, tokenExpiry: expiry });
+    checkServerVersion();  // fire-and-forget — ne bloque pas le retour du token
     return token;
   } catch (e) {
     console.warn("[TurboDL] Auth failed:", e.message);
@@ -80,7 +113,7 @@ async function apiSendUrl(url, dest) {
   try {
     const r = await fetch(`${TD_HOST}/downloads/add`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      headers: { "Content-Type": "application/json", ...authHeaders(token) },
       body:    JSON.stringify({ url, dest: dest || s.dest || null }),
     });
     if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
@@ -95,7 +128,7 @@ async function apiGetStatus() {
   if (!token) return null;
   try {
     const r = await fetch(`${TD_HOST}/status`, {
-      headers: { "Authorization": `Bearer ${token}` },
+      headers: authHeaders(token),
     });
     if (!r.ok) return null;
     return await r.json();
@@ -124,7 +157,7 @@ async function sendInteractive(urls) {
     try {
       const r = await fetch(`${TD_HOST}/downloads/add_interactive`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
         body:    JSON.stringify({ url: combined, dest: s.dest || null }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -257,7 +290,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "TEST_CONNECTION": {
         try {
           const { token } = await fetchLocalToken();
-          sendResponse({ ok: !!token });
+          await checkServerVersion();
+          const s = await getSettings();
+          sendResponse({
+            ok:             !!token,
+            serverVersion:  s.serverVersion,
+            versionMismatch: s.versionMismatch,
+            extVersion:     EXT_VERSION,
+          });
         } catch (e) {
           sendResponse({ ok: false, error: e.message });
         }

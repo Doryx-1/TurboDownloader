@@ -68,7 +68,15 @@
       if (result?.ok) {
         dot.className    = "status-dot ok";
         text.textContent = "Connected to TurboDownloader ✓";
-        sub.textContent  = "Ready to receive downloads";
+        if (result.versionMismatch) {
+          sub.textContent = `Version mismatch — extension ${result.extVersion}, server ${result.serverVersion}`;
+          sub.style.color = "#c8a830";
+        } else {
+          sub.textContent = result.serverVersion
+            ? `Server v${result.serverVersion} — versions match`
+            : "Ready to receive downloads";
+          sub.style.color = "";
+        }
       } else {
         dot.className    = "status-dot err";
         text.textContent = "TurboDownloader not reachable";

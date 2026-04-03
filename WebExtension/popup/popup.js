@@ -1,5 +1,7 @@
 // popup.js — TurboDownloader Extension Popup
 
+const EXT_VERSION = chrome.runtime.getManifest().version;
+
 // ── Download progress WebSocket ─────────────────────────────────────────────
 let _dlWs = null;
 let _dlRenderScheduled = false;
@@ -90,11 +92,14 @@ function _fmtSpeed(bps) {
   let currentTab  = null;
 
   // ── DOM refs ───────────────────────────────────────────────────────────────
-  const statusDot      = document.getElementById("status-dot");
-  const statusBar      = document.getElementById("status-bar");
-  const statusText     = document.getElementById("status-text");
-  const statusQueue    = document.getElementById("status-queue");
-  const interceptToggle= document.getElementById("intercept-toggle");
+  const statusDot          = document.getElementById("status-dot");
+  const statusBar          = document.getElementById("status-bar");
+  const statusText         = document.getElementById("status-text");
+  const statusQueue        = document.getElementById("status-queue");
+  const versionWarn        = document.getElementById("version-warn");
+  const versionWarnText    = document.getElementById("version-warn-text");
+  const versionWarnDismiss = document.getElementById("version-warn-dismiss");
+  const interceptToggle    = document.getElementById("intercept-toggle");
   const linksCount     = document.getElementById("links-count");
   const linkList       = document.getElementById("link-list");
   const selectAllBtn   = document.getElementById("select-all");
@@ -122,6 +127,23 @@ function _fmtSpeed(bps) {
 
   // Check server status
   checkStatus();
+
+  // Show version mismatch banner if flagged
+  const vs = await chrome.storage.local.get({
+    versionMismatch:  false,
+    serverVersion:    null,
+    versionDismissed: false,
+  });
+  if (vs.versionMismatch && !vs.versionDismissed) {
+    versionWarnText.textContent =
+      `Version mismatch — extension ${EXT_VERSION}, server ${vs.serverVersion} · Please update`;
+    versionWarn.style.display = "flex";
+  }
+
+  versionWarnDismiss.addEventListener("click", async () => {
+    versionWarn.style.display = "none";
+    await chrome.storage.local.set({ versionDismissed: true });
+  });
 
   // Load links for this tab
   loadLinks();
