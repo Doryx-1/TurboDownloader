@@ -219,31 +219,73 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // ── Download interception ─────────────────────────────────────────────────────
 
-chrome.downloads.onCreated.addListener(async (item) => {
-  // Extract extension synchronously before any await, so the cancel
-  // fires as early as possible (getSettings is async — ~a few ms delay).
-  let ext;
-  try {
-    const path = new URL(item.url).pathname.toLowerCase();
-    ext = "." + path.split(".").pop().split("?")[0];
-    if (!ext || ext === ".") return;
-  } catch { return; }
+// IDs already handled by onCreated — prevents double-interception in onDeterminingFilename.
+const _interceptedIds = new Set();
 
-  const s = await getSettings();
-  if (!s.intercept) return;
-  if (s.intercept_use_regex && s.intercept_regex) {
-    try {
-      if (!new RegExp(s.intercept_regex, "i").test(item.url)) return;
-    } catch { return; }
-  } else {
-    if (!s.extensions.includes(ext)) return;
+// Shared helper: extract extension from a candidate filename or URL segment.
+function _extFrom(filename, url) {
+  if (filename) {
+    const base = filename.replace(/\\/g, "/").split("/").pop();
+    const dot  = base.lastIndexOf(".");
+    if (dot > 0) return base.slice(dot).toLowerCase();
   }
+  try {
+    const seg = new URL(url).pathname.split("/").pop().toLowerCase();
+    const dot = seg.lastIndexOf(".");
+    if (dot > 0) return seg.slice(dot).split("?")[0];
+  } catch { /* non-parseable URL */ }
+  return "";
+}
 
-  // Cancel the browser download and erase it from the download shelf
-  // before handing the URL to TurboDownloader.
+// Shared helper: decide whether to intercept based on current settings.
+async function _shouldIntercept(ext, url) {
+  const s = await getSettings();
+  if (!s.intercept) return false;
+  if (s.intercept_use_regex && s.intercept_regex) {
+    try { return new RegExp(s.intercept_regex, "i").test(url); } catch { return false; }
+  }
+  return !!ext && s.extensions.includes(ext);
+}
+
+// ── Pass 1 — onCreated ────────────────────────────────────────────────────────
+// Fires as soon as Chrome decides a navigation is a download.
+// item.filename may be empty here for redirect-based downloads (e.g. modslocker),
+// because Chrome hasn't resolved the final URL/Content-Disposition yet.
+// Pass 2 (onDeterminingFilename) handles that case.
+chrome.downloads.onCreated.addListener(async (item) => {
+  if (item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+
+  const ext = _extFrom(item.filename, item.url);
+  if (!await _shouldIntercept(ext, item.url)) return;
+
+  _interceptedIds.add(item.id);
+  setTimeout(() => _interceptedIds.delete(item.id), 30_000);
   chrome.downloads.cancel(item.id);
   chrome.downloads.erase({ id: item.id });
   await sendInteractive([item.url]);
+});
+
+// ── Pass 2 — onDeterminingFilename ────────────────────────────────────────────
+// Fires AFTER Chrome has fully resolved redirects and Content-Disposition.
+// item.filename is always populated here — this is the safety net for sites that
+// generate download links dynamically (modslocker, modfire, etc.) where the
+// initial URL has no recognisable extension.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  suggest();  // must call synchronously; we cancel asynchronously if needed
+
+  if (_interceptedIds.has(item.id)) return;  // already handled by onCreated
+  if (item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+
+  (async () => {
+    const ext = _extFrom(item.filename, item.url);
+    if (!await _shouldIntercept(ext, item.url)) return;
+
+    _interceptedIds.add(item.id);
+    setTimeout(() => _interceptedIds.delete(item.id), 30_000);
+    chrome.downloads.cancel(item.id);
+    chrome.downloads.erase({ id: item.id });
+    await sendInteractive([item.url]);
+  })();
 });
 
 // ── Badge: count links on active tab ─────────────────────────────────────────

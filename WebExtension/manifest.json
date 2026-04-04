@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TurboDownloader",
-  "version": "2.7.8",
+  "version": "2.7.9",
   "description": "Send downloads to TurboDownloader desktop app",
 
   "permissions": [
