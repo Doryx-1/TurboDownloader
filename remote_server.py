@@ -731,7 +731,7 @@ class RemoteServer:
                     keep_tree=False,
                     dest_override=dest,
                 )
-                _log.info("Queued (%s): %s", wtype, req.url[:80])
+                _log.info("Queued (%s): %s", wtype, req.url[:200])
 
             app_ref.after(0, _inject)
             return {"status": "queued", "url": req.url, "dest": req.dest, "type": "auto"}
@@ -761,7 +761,7 @@ class RemoteServer:
                     # ── Trigger the normal download flow (opens tree_popup) ──
                     app_ref.start_downloads()
 
-                    _log.info("Interactive inject: %s", req.url[:80])
+                    _log.info("Interactive inject: %s", req.url[:200])
 
                 except Exception as e:
                     _log.error("Interactive inject error: %s", e)

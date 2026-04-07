@@ -1,6 +1,9 @@
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
 
+import requests as _requests
 import customtkinter as ctk
 
 
@@ -9,6 +12,19 @@ _VIDEO_EXTS    = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v
 _SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 _IMAGE_EXTS    = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 _NFO_EXTS      = {".nfo"}
+
+
+def _fmt_size(n: int | None) -> str:
+    """Format byte count to human-readable string."""
+    if n is None:
+        return "—"
+    if n >= 1_073_741_824:
+        return f"{n / 1_073_741_824:.1f} GB"
+    if n >= 1_048_576:
+        return f"{n / 1_048_576:.1f} MB"
+    if n >= 1_024:
+        return f"{n / 1_024:.0f} KB"
+    return f"{n} B"
 
 
 def _file_icon(name: str) -> str:
@@ -35,11 +51,13 @@ class FileTreeNode:
         self.file_url  = ""
         self.rel_dir   = ""
         self.var       = None           # ctk.BooleanVar — assigné in _create_row
+        self.filesize: int | None = None  # Content-Length in bytes (None = unknown)
         self.depth     = 0
         self._propagating = False
         # UI refs — remplis in _build_ui
         self._row_frame  = None         # frame-ligne in le scroll
         self._expand_btn = None         # bouton ▼/▶ (dossiers uniquement)
+        self._size_lbl   = None         # label taille (fichiers uniquement)
         self._expanded   = True
         self._search_hidden = False     # hidden by the search filter
 
@@ -155,11 +173,14 @@ class FileTreePopup(ctk.CTkToplevel):
                 par = dir_map[cur]
             return dir_map[path]
 
-        for file_url, rel_dir in files:
+        for entry in files:
+            file_url, rel_dir = entry[0], entry[1]
+            size = entry[2] if len(entry) > 2 else None
             name = unquote(os.path.basename(file_url.split("?")[0]) or "file.bin")
             fn = FileTreeNode(name, is_dir=False)
             fn.file_url = file_url
             fn.rel_dir  = rel_dir
+            fn.filesize = size
             if rel_dir:
                 dn = get_or_create_dir(rel_dir)
                 fn.parent = dn
@@ -256,6 +277,15 @@ class FileTreePopup(ctk.CTkToplevel):
 
         self._refresh_count()
 
+        # Fetch file sizes in background (HEAD requests, max 6 parallel)
+        nodes_without_size = [n for n in self._all_file_nodes if n.filesize is None]
+        if nodes_without_size:
+            threading.Thread(
+                target=self._fetch_sizes_async,
+                args=(nodes_without_size,),
+                daemon=True,
+            ).start()
+
         # ── Destination bar ───────────────────────────────────────────────────
         dest_bar = ctk.CTkFrame(self, fg_color=("gray88", "#232323"))
         dest_bar.pack(fill="x", padx=0, pady=0)
@@ -315,6 +345,19 @@ class FileTreePopup(ctk.CTkToplevel):
             spacer = ctk.CTkLabel(row, text="", width=indent_px + 28, height=24)
             spacer.pack(side="left")
 
+        # Size label — packed RIGHT before the checkbox so pack() reserves the slot
+        if not node.is_dir:
+            size_lbl = ctk.CTkLabel(
+                row,
+                text=_fmt_size(node.filesize),
+                text_color="gray",
+                font=ctk.CTkFont(size=11),
+                width=72,
+                anchor="e",
+            )
+            size_lbl.pack(side="right", padx=(0, 10))
+            node._size_lbl = size_lbl
+
         icon = "📁 " if node.is_dir else _file_icon(node.name)
         dir_color = self._dir_text_color()
         cb = ctk.CTkCheckBox(
@@ -327,6 +370,34 @@ class FileTreePopup(ctk.CTkToplevel):
         )
         cb.pack(side="left", padx=4)
         node._checkbox = cb
+
+    # ---------------------------------------------------------------- File sizes
+
+    def _fetch_sizes_async(self, nodes: list):
+        """Fetches Content-Length for each node via HEAD, updates labels live."""
+        def fetch_one(node):
+            if not self.winfo_exists():
+                return
+            try:
+                r = _requests.head(node.file_url, timeout=8, allow_redirects=True)
+                if r.status_code in (403, 405):
+                    r = _requests.get(node.file_url, timeout=8,
+                                      allow_redirects=True, stream=True)
+                    r.close()
+                if r.ok:
+                    cl = r.headers.get("Content-Length", "")
+                    if cl.isdigit():
+                        size = int(cl)
+                        node.filesize = size
+                        if self.winfo_exists() and node._size_lbl:
+                            self.after(0, lambda lbl=node._size_lbl, s=size:
+                                       lbl.configure(text=_fmt_size(s))
+                                       if self.winfo_exists() else None)
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            pool.map(fetch_one, nodes)
 
     # ---------------------------------------------------------------- Sorting
 

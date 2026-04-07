@@ -1,5 +1,6 @@
 """crawl.py — CrawlMixin for TurboDownloader."""
 import os
+import re
 import threading
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -67,15 +68,36 @@ class CrawlMixin:
         """
         if ytdlp_worker.is_ytdlp_url(url):
             return "ytdlp"
+
+        # Quick check: known file extension anywhere in the full URL including
+        # query params (e.g. https://cdn.example.com/dl?file=mod.zip&token=abc).
+        # Requires at least one word char before the ext to avoid false positives.
+        url_lower = url.lower()
+        for ext in self._active_extensions:
+            if re.search(r'[\w\-]' + re.escape(ext) + r'(?=[?&#]|$)', url_lower):
+                return "file"
+
         try:
             r = self.req.head(url, timeout=15, allow_redirects=True)
-            if r.status_code == 405:
+            # 405 = HEAD not allowed; 403 = pre-signed URL signed for GET only
+            # (e.g. Cloudflare R2 / AWS S3 pre-signed URLs) — retry with GET.
+            if r.status_code in (403, 405):
                 r = self.req.get(url, timeout=15, allow_redirects=True, stream=True)
                 r.close()
             if not r.ok:
+                # Server refused the probe but may still be a valid download
+                # (e.g. CDN requires browser session).  Trust Content-Disposition
+                # if present, otherwise give up.
+                cd = (r.headers.get("Content-Disposition") or "").lower()
+                if "attachment" in cd:
+                    return "file"
                 return "unknown"
             ct = (r.headers.get("Content-Type") or "").lower()
             if "text/html" in ct:
+                # Check Content-Disposition even on HTML responses (rare but possible)
+                cd = (r.headers.get("Content-Disposition") or "").lower()
+                if "attachment" in cd:
+                    return "file"
                 return "directory"
             return "file"
         except Exception as e:

@@ -284,7 +284,10 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     setTimeout(() => _interceptedIds.delete(item.id), 30_000);
     chrome.downloads.cancel(item.id);
     chrome.downloads.erase({ id: item.id });
-    await sendInteractive([item.url]);
+    // Prefer finalUrl (post-redirect CDN URL, often has file extension in path)
+    // over url (original pre-redirect link that may require browser session).
+    const downloadUrl = item.finalUrl || item.url;
+    await sendInteractive([downloadUrl]);
   })();
 });
 
