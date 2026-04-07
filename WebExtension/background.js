@@ -254,6 +254,9 @@ async function _shouldIntercept(ext, url) {
 // Pass 2 (onDeterminingFilename) handles that case.
 chrome.downloads.onCreated.addListener(async (item) => {
   if (item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+  // "interrupted" in onCreated = download reloaded from a previous Chrome session,
+  // not a fresh download. Skip it — TD may already have it in its restored queue.
+  if (item.state === "interrupted") return;
 
   const ext = _extFrom(item.filename, item.url);
   if (!await _shouldIntercept(ext, item.url)) return;
