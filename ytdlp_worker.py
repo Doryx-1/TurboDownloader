@@ -264,9 +264,10 @@ def run(idx: int, app) -> None:
         app.ui(app._refresh_filter_counts)
         return
 
-    it.state      = "downloading"
-    it.started_at = time.time()
-    it.error_msg  = ""
+    it.state         = "downloading"
+    it.started_at    = time.time()
+    it.last_activity = time.time()   # reset stall watchdog after queue wait
+    it.error_msg     = ""
     app.ui(app._update_row_ui, idx)
     app.ui(app._refresh_filter_counts)
 
@@ -309,9 +310,10 @@ def run(idx: int, app) -> None:
             total   = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             current = d.get("downloaded_bytes", 0)
 
-            it.total_size  = total or None
-            it.downloaded  = current
-            it.resume_from = 0
+            it.total_size    = total or None
+            it.downloaded    = current
+            it.resume_from   = 0
+            it.last_activity = time.time()   # watchdog stall detection
 
             # Feed global speed tracker with the delta since last hook call
             delta = current - getattr(it, "_yt_last_bytes", 0)

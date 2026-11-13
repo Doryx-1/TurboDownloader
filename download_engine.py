@@ -508,9 +508,13 @@ class DownloadEngineMixin:
                 self.ui(self._refresh_filter_counts)
                 return
 
-            it.state      = "downloading"
-            it.started_at = time.time()
-            it.error_msg  = ""
+            # Stays "waiting" through setup + host-slot acquisition below —
+            # only flips to "downloading" once a host slot is actually held,
+            # so the UI/watchdog reflect items truly transferring data
+            # (worker-pool size can exceed max_per_host, e.g. 10 workers vs
+            # a 3-per-host cap: the other 7 must wait for a slot).
+            it.state     = "waiting"
+            it.error_msg = ""
             self.ui(self._update_row_ui, idx)
             self.ui(self._refresh_filter_counts)
 
@@ -538,6 +542,12 @@ class DownloadEngineMixin:
             # Acquire per-host slot — released in the finally block below
             _host_sem = self._get_host_sem(it.url)
             _host_sem.acquire()
+
+            it.state         = "downloading"
+            it.started_at    = time.time()
+            it.last_activity = time.time()   # reset stall watchdog after queue/host wait
+            self.ui(self._update_row_ui, idx)
+            self.ui(self._refresh_filter_counts)
             try:
                 with self.req.get(it.url, stream=True, allow_redirects=True,
                                   timeout=60, headers=headers) as r:
@@ -668,6 +678,7 @@ class DownloadEngineMixin:
                     for _ in range(delay):
                         if self.stop_all_event.is_set() or it.cancel_event.is_set():
                             break
+                        it.last_activity = time.time()   # backoff wait isn't a stall
                         time.sleep(1)
                     continue
                 if it.retry_count >= retry_max and retry_max > 0:

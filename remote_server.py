@@ -493,7 +493,7 @@ class RemoteServer:
             ],
             allow_origin_regex=r"chrome-extension://[a-z]{32}|moz-extension://[0-9a-f-]{36}",
             allow_methods=["GET", "POST", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type"],
+            allow_headers=["Authorization", "Content-Type", "X-Extension-Version"],
             allow_credentials=False,
         )
 
@@ -505,6 +505,18 @@ class RemoteServer:
             if not credentials or not verify_token(credentials.credentials, settings):
                 raise HTTPException(status_code=401, detail="Invalid or expired token")
             return True
+
+        # ── Helper: log extension version header ─────────────────────────────
+
+        def _log_ext_version(request: Request) -> "str | None":
+            from updater import APP_VERSION
+            ext_ver = request.headers.get("x-extension-version")
+            if ext_ver and ext_ver != APP_VERSION:
+                _log.warning(
+                    "Extension version mismatch: extension=%s server=%s",
+                    ext_ver, APP_VERSION,
+                )
+            return ext_ver
 
         # ── Helper: serialise a DownloadItem for the API ──────────────────────
 
@@ -644,7 +656,9 @@ class RemoteServer:
             return {"status": "update_started"}
 
         @api.get("/status")
-        def get_status(_ = Depends(require_auth)):
+        def get_status(request: Request, _ = Depends(require_auth)):
+            from updater import APP_VERSION
+            ext_ver = _log_ext_version(request)
             items_list = [_item_dict(i) for i in sorted(app_ref.items.keys())]
             # Global speed
             now = time.time()
@@ -655,9 +669,11 @@ class RemoteServer:
             for it in app_ref.items.values():
                 counts[it.state] = counts.get(it.state, 0) + 1
             return {
-                "global_speed_bps": int(global_speed),
-                "counts":           counts,
-                "downloads":        items_list,
+                "global_speed_bps":    int(global_speed),
+                "counts":              counts,
+                "downloads":           items_list,
+                "extension_version":   ext_ver,
+                "extension_version_ok": (ext_ver == APP_VERSION) if ext_ver else None,
             }
 
         @api.get("/downloads/{idx}")
@@ -715,7 +731,7 @@ class RemoteServer:
                     keep_tree=False,
                     dest_override=dest,
                 )
-                _log.info("Queued (%s): %s", wtype, req.url[:80])
+                _log.info("Queued (%s): %s", wtype, req.url[:200])
 
             app_ref.after(0, _inject)
             return {"status": "queued", "url": req.url, "dest": req.dest, "type": "auto"}
@@ -745,7 +761,7 @@ class RemoteServer:
                     # ── Trigger the normal download flow (opens tree_popup) ──
                     app_ref.start_downloads()
 
-                    _log.info("Interactive inject: %s", req.url[:80])
+                    _log.info("Interactive inject: %s", req.url[:200])
 
                 except Exception as e:
                     _log.error("Interactive inject error: %s", e)

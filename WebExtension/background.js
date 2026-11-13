@@ -7,8 +7,9 @@
 
 // HTTP is used for local connections — safe on loopback, no cert trust required.
 // The local token exchange (no credentials in transit) provides authentication.
-const TD_HOST        = "http://127.0.0.1:9988";
+const TD_HOST         = "http://127.0.0.1:9988";
 const TOKEN_MARGIN_MS = 5 * 60 * 1000;  // renew 5 min before expiry
+const EXT_VERSION     = chrome.runtime.getManifest().version;
 
 // ── Default settings ──────────────────────────────────────────────────────────
 
@@ -21,6 +22,10 @@ const DEFAULT_SETTINGS = {
   dest:               "",
   intercept_use_regex: false,
   intercept_regex:    "",
+  serverVersion:      null,
+  versionMismatch:    false,
+  versionCheckedAt:   0,
+  versionDismissed:   false,
 };
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -32,6 +37,33 @@ async function getSettings() {
 
 async function saveSettings(patch) {
   await chrome.storage.local.set(patch);
+}
+
+// ── Version check (extension vs server) ──────────────────────────────────────
+
+async function checkServerVersion() {
+  try {
+    const r = await fetch(`${TD_HOST}/version`);
+    if (!r.ok) return;
+    const { version: serverVer } = await r.json();
+    const mismatch = serverVer !== EXT_VERSION;
+    const patch = {
+      serverVersion:    serverVer,
+      versionMismatch:  mismatch,
+      versionCheckedAt: Date.now(),
+    };
+    if (!mismatch) patch.versionDismissed = false;  // reset dismiss quand versions reconciliées
+    await saveSettings(patch);
+  } catch { /* serveur injoignable — on garde l'état précédent */ }
+}
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+
+function authHeaders(token) {
+  return {
+    "Authorization":       `Bearer ${token}`,
+    "X-Extension-Version": EXT_VERSION,
+  };
 }
 
 // ── Auth — local token (no credentials needed) ────────────────────────────────
@@ -63,6 +95,7 @@ async function getToken() {
     const { token, expiresIn } = await fetchLocalToken();
     const expiry = now + expiresIn * 3_600_000;
     await saveSettings({ token, tokenExpiry: expiry });
+    checkServerVersion();  // fire-and-forget — ne bloque pas le retour du token
     return token;
   } catch (e) {
     console.warn("[TurboDL] Auth failed:", e.message);
@@ -80,7 +113,7 @@ async function apiSendUrl(url, dest) {
   try {
     const r = await fetch(`${TD_HOST}/downloads/add`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      headers: { "Content-Type": "application/json", ...authHeaders(token) },
       body:    JSON.stringify({ url, dest: dest || s.dest || null }),
     });
     if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
@@ -95,7 +128,7 @@ async function apiGetStatus() {
   if (!token) return null;
   try {
     const r = await fetch(`${TD_HOST}/status`, {
-      headers: { "Authorization": `Bearer ${token}` },
+      headers: authHeaders(token),
     });
     if (!r.ok) return null;
     return await r.json();
@@ -124,7 +157,7 @@ async function sendInteractive(urls) {
     try {
       const r = await fetch(`${TD_HOST}/downloads/add_interactive`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
         body:    JSON.stringify({ url: combined, dest: s.dest || null }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -186,31 +219,79 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // ── Download interception ─────────────────────────────────────────────────────
 
-chrome.downloads.onCreated.addListener(async (item) => {
-  // Extract extension synchronously before any await, so the cancel
-  // fires as early as possible (getSettings is async — ~a few ms delay).
-  let ext;
-  try {
-    const path = new URL(item.url).pathname.toLowerCase();
-    ext = "." + path.split(".").pop().split("?")[0];
-    if (!ext || ext === ".") return;
-  } catch { return; }
+// IDs already handled by onCreated — prevents double-interception in onDeterminingFilename.
+const _interceptedIds = new Set();
 
-  const s = await getSettings();
-  if (!s.intercept) return;
-  if (s.intercept_use_regex && s.intercept_regex) {
-    try {
-      if (!new RegExp(s.intercept_regex, "i").test(item.url)) return;
-    } catch { return; }
-  } else {
-    if (!s.extensions.includes(ext)) return;
+// Shared helper: extract extension from a candidate filename or URL segment.
+function _extFrom(filename, url) {
+  if (filename) {
+    const base = filename.replace(/\\/g, "/").split("/").pop();
+    const dot  = base.lastIndexOf(".");
+    if (dot > 0) return base.slice(dot).toLowerCase();
   }
+  try {
+    const seg = new URL(url).pathname.split("/").pop().toLowerCase();
+    const dot = seg.lastIndexOf(".");
+    if (dot > 0) return seg.slice(dot).split("?")[0];
+  } catch { /* non-parseable URL */ }
+  return "";
+}
 
-  // Cancel the browser download and erase it from the download shelf
-  // before handing the URL to TurboDownloader.
+// Shared helper: decide whether to intercept based on current settings.
+async function _shouldIntercept(ext, url) {
+  const s = await getSettings();
+  if (!s.intercept) return false;
+  if (s.intercept_use_regex && s.intercept_regex) {
+    try { return new RegExp(s.intercept_regex, "i").test(url); } catch { return false; }
+  }
+  return !!ext && s.extensions.includes(ext);
+}
+
+// ── Pass 1 — onCreated ────────────────────────────────────────────────────────
+// Fires as soon as Chrome decides a navigation is a download.
+// item.filename may be empty here for redirect-based downloads (e.g. modslocker),
+// because Chrome hasn't resolved the final URL/Content-Disposition yet.
+// Pass 2 (onDeterminingFilename) handles that case.
+chrome.downloads.onCreated.addListener(async (item) => {
+  if (item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+  // "interrupted" in onCreated = download reloaded from a previous Chrome session,
+  // not a fresh download. Skip it — TD may already have it in its restored queue.
+  if (item.state === "interrupted") return;
+
+  const ext = _extFrom(item.filename, item.url);
+  if (!await _shouldIntercept(ext, item.url)) return;
+
+  _interceptedIds.add(item.id);
+  setTimeout(() => _interceptedIds.delete(item.id), 30_000);
   chrome.downloads.cancel(item.id);
   chrome.downloads.erase({ id: item.id });
   await sendInteractive([item.url]);
+});
+
+// ── Pass 2 — onDeterminingFilename ────────────────────────────────────────────
+// Fires AFTER Chrome has fully resolved redirects and Content-Disposition.
+// item.filename is always populated here — this is the safety net for sites that
+// generate download links dynamically (modslocker, modfire, etc.) where the
+// initial URL has no recognisable extension.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  suggest();  // must call synchronously; we cancel asynchronously if needed
+
+  if (_interceptedIds.has(item.id)) return;  // already handled by onCreated
+  if (item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+
+  (async () => {
+    const ext = _extFrom(item.filename, item.url);
+    if (!await _shouldIntercept(ext, item.url)) return;
+
+    _interceptedIds.add(item.id);
+    setTimeout(() => _interceptedIds.delete(item.id), 30_000);
+    chrome.downloads.cancel(item.id);
+    chrome.downloads.erase({ id: item.id });
+    // Prefer finalUrl (post-redirect CDN URL, often has file extension in path)
+    // over url (original pre-redirect link that may require browser session).
+    const downloadUrl = item.finalUrl || item.url;
+    await sendInteractive([downloadUrl]);
+  })();
 });
 
 // ── Badge: count links on active tab ─────────────────────────────────────────
@@ -257,7 +338,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "TEST_CONNECTION": {
         try {
           const { token } = await fetchLocalToken();
-          sendResponse({ ok: !!token });
+          await checkServerVersion();
+          const s = await getSettings();
+          sendResponse({
+            ok:             !!token,
+            serverVersion:  s.serverVersion,
+            versionMismatch: s.versionMismatch,
+            extVersion:     EXT_VERSION,
+          });
         } catch (e) {
           sendResponse({ ok: false, error: e.message });
         }
