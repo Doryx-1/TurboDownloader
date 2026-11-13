@@ -306,8 +306,10 @@ class YtdlpPopup(ctk.CTkToplevel):
                          anchor="w", font=ctk.CTkFont(size=12),
                          text_color="#888888").grid(
                              row=0, column=1, padx=(0, 10), pady=(10, 2), sticky="ew")
-            ctk.CTkLabel(card, text="⚠ Could not fetch video info", anchor="w",
-                         font=ctk.CTkFont(size=11), text_color="#8B4500").grid(
+            ctk.CTkLabel(card,
+                         text="ℹ Preview unavailable  ·  Best quality & MP3 still downloadable",
+                         anchor="w", font=ctk.CTkFont(size=11),
+                         text_color="#555555").grid(
                              row=1, column=1, padx=(0, 10), pady=(0, 10), sticky="w")
 
     def _make_playlist_section(self, url: str, meta: dict):
