@@ -16,6 +16,7 @@ import sys
 import subprocess
 import pathlib
 import tempfile
+import time
 
 from logger import get_logger
 _log = get_logger("updater")
@@ -24,6 +25,7 @@ APP_VERSION    = "2.7.10"
 GITHUB_REPO    = "Doryx-1/TurboDownloader"
 API_URL        = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 SETUP_FILENAME = "TurboDownloader_Setup.exe"
+UPDATE_LOG_FILENAME = "TurboDownloader_update.log"
 
 
 def _parse_version(tag: str) -> tuple:
@@ -327,51 +329,71 @@ def _launch_download_and_install_silent(app, url: str, sha256_url: str | None = 
     threading.Thread(target=_do, daemon=True, name="SilentUpdateDownload").start()
 
 
-def _install_silent(setup_path: pathlib.Path, app):
-    """Launches the installer with /VERYSILENT flags and quits the app."""
+def _run_installer_and_quit(setup_path: pathlib.Path, app):
+    """Launches the Inno Setup installer silently, then quits the app for good.
+
+    The installer cannot replace TurboDownloader.exe while this process is
+    alive, so the exit must be guaranteed: after the normal shutdown we give
+    worker threads a few seconds to stop, then hard-exit. The installer waits
+    for the exe to be released and relaunches the app once files are in place.
+    """
+    # Remove Zone.Identifier (Mark of the Web) so SmartScreen does not
+    # silently block the installer when launched from a background thread.
     try:
-        import subprocess
+        zone_file = pathlib.Path(str(setup_path) + ":Zone.Identifier")
+        zone_file.unlink(missing_ok=True)
+    except Exception:
+        pass
 
-        # Remove Zone.Identifier (Mark of the Web) so Windows SmartScreen
-        # does not silently block the installer when launched from a background thread.
-        try:
-            zone_file = pathlib.Path(str(setup_path) + ":Zone.Identifier")
-            zone_file.unlink(missing_ok=True)
-        except Exception:
-            pass
+    # No /CURRENTUSER or /ALLUSERS: Setup reuses the mode of the existing
+    # install, so an all-users install is updated in place instead of getting
+    # a second per-user copy next to it.
+    log_path = pathlib.Path(tempfile.gettempdir()) / UPDATE_LOG_FILENAME
+    DETACHED  = 0x00000008
+    NEW_GROUP = 0x00000200
+    subprocess.Popen(
+        [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+         f"/LOG={log_path}"],
+        creationflags=DETACHED | NEW_GROUP,
+        close_fds=True,
+    )
+    _log.info("Installer launched (log: %s) — quitting", log_path)
+    # Give the installer a moment to start before we exit
+    app.after(1500, lambda: _quit_for_update(app))
 
-        DETACHED  = 0x00000008
-        NEW_GROUP = 0x00000200
-        subprocess.Popen(
-            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"],
-            creationflags=DETACHED | NEW_GROUP,
-            close_fds=True,
-        )
-        # Give the installer enough time to start before we exit
-        app.after(3000, app._tray_quit)
+
+def _quit_for_update(app):
+    """Normal shutdown, then a hard exit so no lingering thread keeps the exe locked."""
+    try:
+        app._tray_quit()   # saves the queue, stops server/workers, destroys the window
+    except Exception as e:
+        _log.error("Shutdown before update failed: %s", e)
+    try:
+        deadline = time.time() + 5
+        me = threading.current_thread()
+        for t in threading.enumerate():
+            if t is me or t.daemon:
+                continue
+            t.join(max(0.0, deadline - time.time()))
+    finally:
+        os._exit(0)
+
+
+def _install_silent(setup_path: pathlib.Path, app):
+    """Remote-triggered update: no UI at all."""
+    try:
+        _run_installer_and_quit(setup_path, app)
     except Exception as e:
         _log.error("Silent install launch failed: %s", e)
 
 
 def _install(setup_path: pathlib.Path, popup, app):
-    """Launches the installer silently and quits TurboDownloader."""
+    """User-triggered update: closes the progress popup, then installs silently."""
     try:
         popup.destroy()
-
-        # Remove Zone.Identifier (Mark of the Web) to avoid SmartScreen blocking.
-        try:
-            zone_file = pathlib.Path(str(setup_path) + ":Zone.Identifier")
-            zone_file.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-        DETACHED  = 0x00000008
-        NEW_GROUP = 0x00000200
-        subprocess.Popen(
-            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"],
-            creationflags=DETACHED | NEW_GROUP,
-            close_fds=True,
-        )
-        app.after(3000, app._tray_quit)
+    except Exception:
+        pass
+    try:
+        _run_installer_and_quit(setup_path, app)
     except Exception as e:
         _log.error("Install launch failed: %s", e)
